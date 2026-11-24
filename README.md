@@ -16,6 +16,7 @@ travel-survey demand.
   idealized half-mile grid), the simulation model, and early results
 - [docs/mode-comparison.md](docs/mode-comparison.md): PRT vs transit (on the
   real schedule), car and bike, timed on the same trips
+- [docs/stadium.md](docs/stadium.md): a stadium crowd leaving at once
 - [docs/speed-and-comfort.md](docs/speed-and-comfort.md): research on PRT
   speeds and ride comfort, faster lines, and route directness
 - [docs/data-sources.md](docs/data-sources.md): trip data, what the census

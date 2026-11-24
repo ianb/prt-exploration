@@ -58,7 +58,8 @@ export const DEFAULTS = {
   rebalanceMaxPerStation: 3, // empties sent to one station per rebalancing round
   // Event surge (e.g. a stadium letting out). null = none. See setupEvent().
   event: null,
-  maxLaunchWait: 8, // s a ready vehicle waits for a gap before launching anyway
+  maxLaunchWait: 8, // s a ready vehicle waits for a gap before claiming one
+  bumpMinDist: 80, // m: main-line vehicles at least this far from a merge can be asked to yield to a station launch
   demandData: null, // origin-destination table; null = synthetic placeholder demand
   direction: 'am',
   demandModel: false, // with survey data: true = smoothed model, false = observed table
@@ -1015,8 +1016,23 @@ export class Sim {
     const vNode = Math.min(ex.vmax, this.edges[this.outEdges[n][0]].vmax);
     const eta = this.t + this.eta(ex.len, 0, vNode);
     const g = this.p.headway + (this.p.vehicleLength + this.p.minGap) / Math.max(vNode, 1);
-    const t = this.freeSlot(n, ex.id, eta, g, ex.len);
+    let t = this.freeSlot(n, ex.id, eta, g, ex.len);
     if (t > eta + this.p.launchSlack && !force) return false;
+    if (t > eta + this.p.launchSlack) {
+      // Fair share: a vehicle that has waited its turn claims the slot it can
+      // make, and main-line vehicles still far enough away to slow down
+      // comfortably are pushed back (they book again behind it).
+      let tt = eta;
+      for (const sl of [...(this.mergeSlots.get(n) || [])]) {
+        const sep = Math.max(g, sl.g);
+        if (Math.abs(sl.t - tt) >= sep) continue;
+        const pd = sl.v.ahead?.merges.find((m) => m[0] === n)?.[1];
+        if (sl.inEdge !== ex.id && pd !== undefined && pd > this.p.bumpMinDist) this.release(sl.v, n);
+        else tt = Math.max(tt, sl.t + sep);
+      }
+      t = this.freeSlot(n, ex.id, tt, g, ex.len);
+      this.stats.launchClaims = (this.stats.launchClaims || 0) + 1;
+    }
     this.book(v, n, ex.id, eta, vNode, t);
     return true;
   }
