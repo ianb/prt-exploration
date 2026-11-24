@@ -151,23 +151,45 @@ same trip, at the same time of day, by transit (real schedule) and PRT.
 - plus boarding and getting off;
 - plus walking, or biking, to and from stations.
 
-Median minutes: car 11, transit 28.6, PRT walking 17.7, PRT with a bike 13.7.
+Bike all the way is street distance (1.3 × straight line) at 16 km/h, plus
+1 minute; e-bike is the same at 23 km/h.
+
+Median minutes:
+
+| Car | Transit | PRT, walking | PRT, bike along | Bike | E-bike |
+|---|---|---|---|---|---|
+| 11 | 28.6 | 17.7 | 13.7 | 14.5 | 10.5 |
 
 **Share of car trips that would still be reasonable another way:**
 
-| | Within car time + 10 min: transit | PRT | PRT + bike | Within 1.5 × car time: transit | PRT | PRT + bike |
-|---|---|---|---|---|---|---|
-| All | 23% | 70% | 89% | 14% | 48% | 65% |
-| Morning | 28% | 74% | 90% | 16% | 59% | 73% |
-| Midday | 31% | 74% | 92% | 23% | 54% | 73% |
-| Afternoon | 19% | 69% | 89% | 11% | 46% | 65% |
-| Evening | 13% | 59% | 86% | 7% | 31% | 46% |
-| To work | 11% | 54% | 86% | 8% | 46% | 59% |
-| Shopping | 38% | 73% | 91% | 27% | 49% | 69% |
-| Social / recreation | 19% | 68% | 86% | 10% | 48% | 71% |
-| 1–3 km | 34% | 67% | 87% | 19% | 37% | 52% |
-| 3–6 km | 10% | 75% | 92% | 9% | 60% | 79% |
-| 6–20 km | 5% | 66% | 90% | 6% | 62% | 84% |
+| | +10 min: transit | PRT | PRT + bike | bike | e-bike | 1.5×: transit | PRT | PRT + bike | bike | e-bike |
+|---|---|---|---|---|---|---|---|---|---|---|
+| All | 23% | 70% | 89% | 81% | 94% | 14% | 48% | 65% | 54% | 82% |
+| Morning | 28% | 74% | 90% | 79% | 90% | 16% | 59% | 73% | 52% | 82% |
+| Midday | 31% | 74% | 92% | 82% | 94% | 23% | 54% | 73% | 60% | 84% |
+| Afternoon | 19% | 69% | 89% | 83% | 94% | 11% | 46% | 65% | 55% | 87% |
+| Evening | 13% | 59% | 86% | 77% | 98% | 7% | 31% | 46% | 47% | 74% |
+| To work | 11% | 54% | 86% | 69% | 86% | 8% | 46% | 59% | 45% | 73% |
+| Shopping | 38% | 73% | 91% | 91% | 98% | 27% | 49% | 69% | 62% | 89% |
+| Social / recreation | 19% | 68% | 86% | 76% | 97% | 10% | 48% | 71% | 60% | 85% |
+| 1–3 km | 34% | 67% | 87% | 99% | 100% | 19% | 37% | 52% | 66% | 87% |
+| 3–6 km | 10% | 75% | 92% | 74% | 99% | 9% | 60% | 79% | 46% | 84% |
+| 6–20 km | 5% | 66% | 90% | 12% | 52% | 6% | 62% | 84% | 19% | 54% |
+
+"+10 min" means within the car's time plus 10 minutes; "1.5×" means
+within one and a half times the car's time.
+
+**On time alone, bikes, and especially e-bikes, are strong competitors
+inside the city.** An e-bike matches or beats the car's median. Time isn't
+everything, though:
+- winter, rain and darkness;
+- hills and effort;
+- carrying things or children;
+- safety in traffic;
+- who can ride at all.
+
+PRT's clear advantage over bikes is on longer trips (over 6 km: PRT + bike
+90%, e-bike 52%, bike 12%) and in all weather.
 
 **Transit covers about a fifth of what people drive to.** Within 10 minutes
 of the car, it's best for shopping and errands and worst in the evening and

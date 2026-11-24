@@ -71,7 +71,10 @@ for await (const r of csvRows(raw('tbi2023/data/linked_trip.csv'))) {
   const prt = sa === sb ? walkAll : (((da + db) * 1.25) / 1.3 + 60 + 30 + sim.stationTime(sa, sb) + 40) / 60;
   const prtBike = sa === sb ? walkAll : (((da + db) * 1.25) / 4.5 + 60 + 40 + 60 + 30 + sim.stationTime(sa, sb) + 40) / 60;
   const h = Number(m[1]);
-  rows.push({ w, km, car, transit, prt: Math.min(prt, walkAll), prtBike: Math.min(prtBike, walkAll), purpose: r.d_purpose_category, period: h < 6 ? 'night' : h < 10 ? 'morning' : h < 15 ? 'midday' : h < 19 ? 'afternoon' : 'evening' });
+  // bike all the way: street distance (1.3 x straight) at 16 km/h, e-bike at 23 km/h, +1 min each
+  const bike = (km * 1300) / 4.5 / 60 + 1;
+  const ebike = (km * 1300) / 6.4 / 60 + 1;
+  rows.push({ w, km, car, transit, bike, ebike, prt: Math.min(prt, walkAll), prtBike: Math.min(prtBike, walkAll), purpose: r.d_purpose_category, period: h < 6 ? 'night' : h < 10 ? 'morning' : h < 15 ? 'midday' : h < 19 ? 'afternoon' : 'evening' });
 }
 const W = (xs) => xs.reduce((a, r) => a + r.w, 0);
 const share = (xs, f) => `${((100 * W(xs.filter(f))) / W(xs)).toFixed(0)}%`.padStart(5);
@@ -85,12 +88,12 @@ const wmed = (xs, k) => {
 const ok10 = (k) => (r) => r[k] <= r.car + 10;
 const ok15x = (k) => (r) => r[k] <= 1.5 * r.car;
 console.log(`car trips inside Minneapolis, over 1 km: ${rows.length} survey records, ${Math.round(W(rows))} weekday trips`);
-console.log(`median minutes: car ${wmed(rows, 'car')}, transit ${wmed(rows, 'transit').toFixed(1)}, PRT walking ${wmed(rows, 'prt').toFixed(1)}, PRT with bike ${wmed(rows, 'prtBike').toFixed(1)}`);
-const line = (label, xs) =>
-  console.log(`${label.padEnd(22)} ${share(xs, ok10('transit'))} ${share(xs, ok10('prt'))} ${share(xs, ok10('prtBike'))}   ${share(xs, ok15x('transit'))} ${share(xs, ok15x('prt'))} ${share(xs, ok15x('prtBike'))}   ${String(Math.round(W(xs))).padStart(7)}`);
+console.log(`median minutes: car ${wmed(rows, 'car')}, transit ${wmed(rows, 'transit').toFixed(1)}, PRT walking ${wmed(rows, 'prt').toFixed(1)}, PRT with bike ${wmed(rows, 'prtBike').toFixed(1)}, bike ${wmed(rows, 'bike').toFixed(1)}, e-bike ${wmed(rows, 'ebike').toFixed(1)}`);
+const MODES = ['transit', 'prt', 'prtBike', 'bike', 'ebike'];
+const line = (label, xs) => console.log(`${label.padEnd(20)} ${MODES.map((k) => share(xs, ok10(k))).join(' ')}   ${MODES.map((k) => share(xs, ok15x(k))).join(' ')}   ${String(Math.round(W(xs))).padStart(7)}`);
 console.log('\nShare of car trips that would be reasonable another way');
-console.log('                       within car + 10 min      within 1.5 x car       weekday');
-console.log('                       transit  PRT  PRT+bike   transit  PRT  PRT+bike trips');
+console.log('                     within car + 10 min                 within 1.5 x car                  weekday');
+console.log('                     trnst  PRT PRT+b  bike ebike      trnst  PRT PRT+b  bike ebike      trips');
 line('all', rows);
 for (const p of ['morning', 'midday', 'afternoon', 'evening', 'night']) line(p, rows.filter((r) => r.period === p));
 const purposes = [...new Set(rows.map((r) => r.purpose))].map((p) => [p, W(rows.filter((r) => r.purpose === p))]).sort((a, b) => b[1] - a[1]).slice(0, 8);
