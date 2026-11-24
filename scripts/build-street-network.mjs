@@ -1662,11 +1662,18 @@ const stPts = fStations.map((s) => [s.x, s.y]);
 const walkCut = { quarterMile: 402, thirdMile: 536, halfMile: 805 };
 const cov = Object.fromEntries(Object.keys(walkCut).map((k) => [k, 0]));
 let walkSum = 0;
+let bikeSum = 0;
+let bestSum = 0;
+const ACCESS = { walk: 1.3, bike: 4.5, bikeOverhead: 30 }; // m/s, m/s, s to get the bike out / put it away
 for (const b of blocks) {
   let de = Infinity;
   for (const q of stPts) de = Math.min(de, dist(q, b.p));
   for (const [k, d] of Object.entries(walkCut)) if (de * 1.25 <= d) cov[k] += b.w;
   walkSum += b.w * de * 1.25;
+  const tw = (de * 1.25) / ACCESS.walk;
+  const tb = (de * 1.25) / ACCESS.bike + ACCESS.bikeOverhead;
+  bikeSum += b.w * tb;
+  bestSum += b.w * Math.min(tw, tb);
 }
 const uniqueSites = new Set(sites).size;
 const stats = {
@@ -1692,7 +1699,14 @@ const stats = {
 const out = {
   params: P,
   // meanWalkM: average walk to the nearest station, weighted by people + jobs (straight line x 1.25)
-  stats: { ...stats, designSpeedKmh: Math.round(P.vMain * 3.6), meanWalkM: Math.round(walkSum / W) },
+  // access: average seconds to reach the nearest station, per end, weighted by people + jobs.
+  // bike = ride at 16 km/h along streets + 30 s to get the bike out or put it away; best = each picks the faster.
+  stats: {
+    ...stats,
+    designSpeedKmh: Math.round(P.vMain * 3.6),
+    meanWalkM: Math.round(walkSum / W),
+    accessS: { walk: Math.round(walkSum / W / ACCESS.walk), bike: Math.round(bikeSum / W), best: Math.round(bestSum / W) },
+  },
   geo: { city: city.map(r1), lakes: Object.fromEntries(Object.entries(geo.lakes).map(([k, r]) => [k, r.map(project).map(r1)])), river: river.map((l) => l.map(r1)) },
   corridors: [...selected].map((l) => ({ name: l.name, oneway: l.oneway !== 'B', bridge: l.bridge, pts: l.pts.map(r1) })),
   nodes: fNodes,

@@ -188,3 +188,39 @@ Door to door, median minutes:
   faster beyond, and runs 5–8 minutes slower than driving.
 
 ![The current network](img/lattice-network.png)
+
+## Vehicle and bike access
+
+**Assumed vehicle:** one bench of three seats, with open floor space for a
+bike or a wheelchair. Each vehicle carries one party, as the simulator
+already assumes. A rider can bring a bike, so they can ride to and from the
+stations at both ends without needing shared bikes or scooters.
+
+**Access options** (`access=` in `scripts/travel-times.mjs`):
+
+| Mode | How it's modelled |
+|---|---|
+| walk | 1.3 m/s along streets |
+| bike | 4.5 m/s (16 km/h), plus 30 s each end to get the bike out or put it away, plus 20 s each end to roll it in and out of the vehicle |
+| best | each rider uses whichever is faster for where they are |
+
+Averaged over people and jobs, reaching the nearest station takes 4.2
+minutes on foot and 1.7 minutes by bike, each end. Riding is faster than
+walking for 94% of people and jobs.
+
+Door to door, median minutes, 4–5 PM, 7,500 trips/hour, current network:
+
+| Distance | PRT, walking | PRT, bike in the vehicle | Car | Transit | Bike all the way |
+|---|---|---|---|---|---|
+| 1–2 km | 14.9 | 10.6 | 7 | 21 | 14 |
+| 2–3 km | 16.4 | 12.0 | 11 | 20 | 18 |
+| 3–5 km | 19.2 | 14.8 | 13 | 30 | 14 |
+| 5–8 km | 22.6 | 18.3 | 17 | 37 | 27 |
+| 8–15 km | 27.6 | 23.3 | 21 | 47 | – |
+
+With a bike along, PRT is within about 1–3 minutes of driving at every
+distance, clearly faster than biking the whole way beyond 3 km, and roughly
+twice as fast as transit.
+
+The extra boarding time for bikes is added to door-to-door time but isn't
+yet simulated as longer berth occupancy.

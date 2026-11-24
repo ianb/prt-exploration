@@ -19,8 +19,15 @@ const net = JSON.parse(fs.readFileSync(new URL(`../data/${netName}.json`, import
 delete opts.net;
 
 const WALK_SPEED = 1.3; // m/s
-// average walk to a station at each end: this network's people+jobs-weighted mean
+// Getting to and from stations (each end), from the network's people+jobs-weighted
+// averages. access=walk (default), bike (rider brings a bike in the vehicle:
+// 3-seat bench with floor space for a bike or wheelchair), or best (each rider
+// uses whichever is faster for where they are).
+const ACCESS_MODE = opts.access || 'walk';
+delete opts.access;
 const WALK_EACH_END = net.stats?.meanWalkM ?? 0.7 * 402;
+const ACCESS_S = net.stats?.accessS?.[ACCESS_MODE] ?? WALK_EACH_END / 1.3;
+const BIKE_DWELL = ACCESS_MODE === 'walk' ? 0 : 20; // extra s each end to roll a bike in and out (bike riders only)
 const bands = [
   [1, 2],
   [2, 3],
@@ -43,7 +50,7 @@ const prt = bands.map(() => ({ door: [], ride: [], wait: [] }));
 for (const [m, wait, ride] of sim.tripLog) {
   const b = bandOf(m / 1000);
   if (b < 0) continue;
-  prt[b].door.push((2 * WALK_EACH_END) / WALK_SPEED + wait + ride);
+  prt[b].door.push(2 * ACCESS_S + 2 * BIKE_DWELL + wait + ride);
   prt[b].ride.push(ride);
   prt[b].wait.push(wait);
 }
@@ -98,7 +105,7 @@ function routeStats(log) {
 
 const fmt = (x) => (x == null ? '   –' : (x / 60).toFixed(1).padStart(5));
 console.log(JSON.stringify(sim.summary()));
-console.log(`\nMedian door-to-door minutes by straight-line trip distance (PRT includes a ${Math.round(WALK_EACH_END)} m walk at each end):`);
+console.log(`\nMedian door-to-door minutes by straight-line trip distance (PRT access: ${ACCESS_MODE}, ${(ACCESS_S / 60).toFixed(1)} min each end${BIKE_DWELL ? ' + ' + BIKE_DWELL + ' s to roll the bike in/out' : ''}):`);
 console.log('distance   PRT   (wait  ride)   car   transit  bike   ride-hail   PRT trips');
 bands.forEach(([a, b], i) => {
   const row = [`${a}-${b} km`.padEnd(9), fmt(median(prt[i].door)), ' (', fmt(median(prt[i].wait)), fmt(median(prt[i].ride)), ')'];
