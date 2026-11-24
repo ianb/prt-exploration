@@ -34,7 +34,9 @@ for await (const r of csvRows(raw('tbi2023/data/linked_trip.csv'))) {
   const o = centre((r.trip_o_cbg_2020 || '').replace(/\.0$/, ''));
   const d = centre((r.trip_d_cbg_2020 || '').replace(/\.0$/, ''));
   const rep = Number(r.duration_minutes);
-  const m = /T(\d\d):(\d\d)/.exec(r.depart_time || '');
+  // local departure time (depart_time itself is UTC)
+  const hm = /^(\d+)(AM|PM)$/.exec(r.depart_hour || '');
+  const m = hm ? [null, (Number(hm[1]) % 12) + (hm[2] === 'PM' ? 12 : 0), Number(r.depart_minute || 0)] : null;
   if (!o || !d || !(rep > 0) || !m) continue;
   const dep = Number(m[1]) * 3600 + Number(m[2]) * 60;
   const km = Math.hypot(o[0] - d[0], o[1] - d[1]) / 1000;

@@ -58,16 +58,18 @@ then compared with the duration the rider reported.
 
 | Straight-line distance | Trips | Median reported | Median router | Router ÷ reported, per trip: median (middle half) |
 |---|---|---|---|---|
-| 0.5–3 km | 293 | 21.0 min | 20.7 min | 0.98 (0.70–1.41) |
-| 3–6 km | 130 | 35.0 min | 34.5 min | 1.01 (0.70–1.37) |
-| 6–20 km | 47 | 42.0 min | 41.4 min | 0.97 (0.78–1.23) |
-| All | 470 | 26.0 min | 25.4 min | 0.99 (0.72–1.38) |
+| 0.5–3 km | 293 | 21.0 min | 20.0 min | 0.95 (0.67–1.31) |
+| 3–6 km | 130 | 35.0 min | 32.3 min | 0.96 (0.71–1.19) |
+| 6–20 km | 47 | 42.0 min | 39.4 min | 0.95 (0.72–1.11) |
+| All | 470 | 26.0 min | 23.7 min | 0.95 (0.67–1.26) |
 
-**Typical times match closely.** The router is within about 1–2% of
-reported times at every distance.
+(An earlier version of this table read the survey's departure timestamps as
+local time; they're UTC, so trips were routed 5–6 hours late. The corrected
+router runs about 5% faster than riders report.) That's consistent with its
+generous assumptions: on-time buses, no transfer buffer, straight-line walks.
 
-**Individual trips scatter by about ±30%.** That's expected given what's
-being compared:
+**Typical times match closely; individual trips scatter.** The scatter is
+expected given what's being compared:
 - the survey only gives block groups, not exact addresses;
 - the survey is from 2023 and the schedule from 2026;
 - reported times are rounded and include the rider's own choices (a slower
@@ -134,3 +136,42 @@ For trips that aren't between common places, which are also longer, transit
 over 45 minutes is the norm, and a quarter take over an hour in the evening.
 PRT's on-demand, nonstop service doesn't depend on a destination being
 popular, so it stays at about half the time.
+
+## Car trips as a signal of desired travel
+
+Car trips show where people want to go when travel is easy. Downtown is an
+exception, under-represented because parking and congestion push people off
+cars there. `scripts/car-trips.mjs` takes every surveyed car trip with both
+ends in Minneapolis (over 1 km; about 470,000 weekday trips) and times the
+same trip, at the same time of day, by transit (real schedule) and PRT.
+
+**PRT is estimated here:**
+- free-flow route time;
+- plus a 1-minute wait;
+- plus boarding and getting off;
+- plus walking, or biking, to and from stations.
+
+Median minutes: car 11, transit 28.6, PRT walking 17.7, PRT with a bike 13.7.
+
+**Share of car trips that would still be reasonable another way:**
+
+| | Within car time + 10 min: transit | PRT | PRT + bike | Within 1.5 × car time: transit | PRT | PRT + bike |
+|---|---|---|---|---|---|---|
+| All | 23% | 70% | 89% | 14% | 48% | 65% |
+| Morning | 28% | 74% | 90% | 16% | 59% | 73% |
+| Midday | 31% | 74% | 92% | 23% | 54% | 73% |
+| Afternoon | 19% | 69% | 89% | 11% | 46% | 65% |
+| Evening | 13% | 59% | 86% | 7% | 31% | 46% |
+| To work | 11% | 54% | 86% | 8% | 46% | 59% |
+| Shopping | 38% | 73% | 91% | 27% | 49% | 69% |
+| Social / recreation | 19% | 68% | 86% | 10% | 48% | 71% |
+| 1–3 km | 34% | 67% | 87% | 19% | 37% | 52% |
+| 3–6 km | 10% | 75% | 92% | 9% | 60% | 79% |
+| 6–20 km | 5% | 66% | 90% | 6% | 62% | 84% |
+
+**Transit covers about a fifth of what people drive to.** Within 10 minutes
+of the car, it's best for shopping and errands and worst in the evening and
+for work trips. PRT reaches about 70%, and nearly 90% with a bike along.
+Longer trips are where the difference is starkest: for trips over 3 km,
+transit is a reasonable substitute for 5–10% of them, PRT for two-thirds or
+more.
