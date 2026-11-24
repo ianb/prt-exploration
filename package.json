@@ -1,0 +1,1 @@
+{"name":"prt-exploration","private":true,"type":"module","scripts":{"build:network":"node scripts/build-network.mjs","sim":"node scripts/run-sim.mjs"}}
