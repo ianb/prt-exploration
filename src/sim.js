@@ -28,6 +28,8 @@ export const DEFAULTS = {
   maxEmptyS: 480, // don't send an empty vehicle from further than this
   keepIdle: 2, // idle vehicles a station keeps before lending them out
   rebalanceS: 20,
+  demandData: null, // origin-destination table; null = synthetic placeholder demand
+  direction: 'am',
   berths: 0, // override berths per station (0 = use the network's)
   seed: 1,
 };
@@ -202,6 +204,7 @@ export class Sim {
   // extra weight downtown and at the University; destinations follow a
   // gravity model.
   buildDemand() {
+    if (this.p.demandData) return this.buildTableDemand(this.p.demandData);
     const hubs = [
       { x: 360, y: 3220, w: 12, r: 1200 }, // downtown
       { x: 3400, y: 2950, w: 4, r: 900 }, // University of Minnesota
@@ -223,6 +226,41 @@ export class Sim {
       }
       return cdf.map((x) => x / acc);
     });
+  }
+
+  // Demand from an origin-destination table (e.g. LODES commutes):
+  // od = [[home station, work station, count], ...]. 'am' runs home -> work,
+  // 'pm' work -> home, 'both' mixes the two.
+  buildTableDemand(data) {
+    const S = this.stations.length;
+    const rowsByOrigin = Array.from({ length: S }, () => []);
+    for (const [h, w, n] of data.od) {
+      if (this.p.direction !== 'pm') rowsByOrigin[h].push([w, n]);
+      if (this.p.direction !== 'am') rowsByOrigin[w].push([h, n]);
+    }
+    const tot = rowsByOrigin.map((r) => r.reduce((a, x) => a + x[1], 0));
+    const all = tot.reduce((a, b) => a + b, 0);
+    this.originCdf = [];
+    let c = 0;
+    for (const t of tot) this.originCdf.push((c += t / all));
+    this.destLists = rowsByOrigin.map((r, o) => {
+      let acc = 0;
+      const ids = [];
+      const cdf = [];
+      for (const [d, n] of r) {
+        ids.push(d);
+        cdf.push((acc += n));
+      }
+      return { ids, cdf: cdf.map((x) => x / (tot[o] || 1)) };
+    });
+  }
+
+  pickDest(o) {
+    if (this.destLists) {
+      const l = this.destLists[o];
+      return l.ids.length ? l.ids[this.pick(l.cdf)] : o;
+    }
+    return this.pick(this.destCdf[o]);
   }
 
   pick(cdf) {
@@ -284,7 +322,7 @@ export class Sim {
 
   newPassenger() {
     const o = this.pick(this.originCdf);
-    const d = this.pick(this.destCdf[o]);
+    const d = this.pickDest(o);
     if (o === d) return;
     this.stats.generated++;
     const st = this.stations[o];

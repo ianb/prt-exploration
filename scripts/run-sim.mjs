@@ -1,11 +1,14 @@
 // Headless run: node scripts/run-sim.mjs [minutes] [key=value ...]
+// demand=lodes uses the Census commute table (direction=am|pm|both).
 import fs from 'node:fs';
 import { Sim } from '../src/sim.js';
 
 const net = JSON.parse(fs.readFileSync(new URL('../data/network.json', import.meta.url)));
 const args = process.argv.slice(2);
 const minutes = Number(args.find((a) => !a.includes('=')) ?? 30);
-const opts = Object.fromEntries(args.filter((a) => a.includes('=')).map((a) => a.split('=')).map(([k, v]) => [k, Number(v)]));
+const opts = Object.fromEntries(args.filter((a) => a.includes('=')).map((a) => a.split('=')).map(([k, v]) => [k, isNaN(Number(v)) ? v : Number(v)]));
+if (opts.demand === 'lodes') opts.demandData = JSON.parse(fs.readFileSync(new URL('../data/demand-lodes.json', import.meta.url)));
+delete opts.demand;
 const t0 = Date.now();
 const sim = new Sim(net, opts);
 console.log(`setup ${Date.now() - t0} ms, ${sim.vehicles.length} vehicles, ${sim.stations.length} stations`);

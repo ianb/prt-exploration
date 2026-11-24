@@ -31,6 +31,7 @@
   label { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 6px 0; font-size: 13px; }
   label span.v { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 48px; text-align: right; }
   input[type=range] { flex: 1; }
+  select { font: inherit; max-width: 170px; background: transparent; color: var(--ink); border: 1px solid var(--edge); border-radius: 6px; }
   .row { display: flex; gap: 6px; margin: 8px 0; flex-wrap: wrap; }
   button { font: inherit; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--edge); background: transparent; color: var(--ink); cursor: pointer; }
   button.on { background: var(--ink); color: var(--bg); }
@@ -60,10 +61,11 @@
   </div>
   <details>
     <summary>Scenario</summary>
-    <label>Trips per hour <input id="tripsPerHour" type="range" min="1000" max="30000" step="1000" value="6000"><span class="v"></span></label>
-    <label>Headway (s) <input id="headway" type="range" min="0.3" max="2" step="0.1" value="1"><span class="v"></span></label>
-    <label>Vehicles per station <input id="fleetPerStation" type="range" min="1" max="20" step="1" value="5"><span class="v"></span></label>
-    <label>Berths per station <input id="berths" type="range" min="4" max="24" step="1" value="10"><span class="v"></span></label>
+    <label>Demand <select id="demand"><option value="synthetic">Placeholder (downtown-weighted)</option><option value="lodes-am" selected>Census commutes, morning</option><option value="lodes-pm">Census commutes, evening</option></select></label>
+    <label>Trips per hour <input id="tripsPerHour" type="range" min="1000" max="30000" step="1000" value="5000"><span class="v"></span></label>
+    <label>Headway (s) <input id="headway" type="range" min="0.3" max="2" step="0.1" value="0.5"><span class="v"></span></label>
+    <label>Vehicles per station <input id="fleetPerStation" type="range" min="1" max="20" step="1" value="6"><span class="v"></span></label>
+    <label>Berths per station <input id="berths" type="range" min="4" max="24" step="1" value="14"><span class="v"></span></label>
     <div class="row"><button id="restart">Restart with these settings</button></div>
   </details>
   <details>

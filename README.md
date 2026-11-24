@@ -11,6 +11,8 @@ grid, with a station within a quarter-mile walk of almost everywhere.
   and the hard problems
 - [docs/minneapolis-v1.md](docs/minneapolis-v1.md): the first city network,
   the simulation model, and results
+- [docs/data-sources.md](docs/data-sources.md): trip data, what the census
+  commute data says about Minneapolis, and other options
 
 ## Running it
 
@@ -20,8 +22,12 @@ Needs Node 20 or newer. There are no dependencies.
 # Rebuild the guideway network from data/geo.json -> data/network.json
 npm run build:network
 
+# Census commute data (LODES): download, then build the station-to-station table
+./scripts/fetch-lodes.sh && node scripts/build-demand.mjs
+
 # Headless simulation: minutes, then any parameter from src/sim.js DEFAULTS
 node scripts/run-sim.mjs 60 tripsPerHour=9000 headway=0.5 fleetPerStation=7 berths=13
+node scripts/run-sim.mjs 60 demand=lodes direction=am tripsPerHour=5000 headway=0.5 fleetPerStation=6 berths=14
 ```
 
 To watch it, serve the repository root with any static server, for example
@@ -38,3 +44,5 @@ lets you change demand, headway, fleet size and berths.
 - `data/geo.json`: the city boundary, lakes and Mississippi River, from
   OpenStreetMap (© OpenStreetMap contributors, ODbL)
 - `data/network.json`: the generated network
+- `data/demand-lodes.json`: Census LODES 2022 commutes, by home and work
+  station (public domain)

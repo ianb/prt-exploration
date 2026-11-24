@@ -66,11 +66,18 @@ for (const k of knobs) {
   show();
 }
 let sim;
-function restart() {
+let lodes = null;
+async function restart() {
   const opts = Object.fromEntries(knobs.map((k) => [k, Number($(k).value)]));
+  const demand = $('demand').value;
+  if (demand.startsWith('lodes')) {
+    lodes ??= await (await fetch('../data/demand-lodes.json')).json();
+    opts.demandData = lodes;
+    opts.direction = demand.endsWith('pm') ? 'pm' : 'am';
+  }
   sim = new Sim(net, opts);
 }
-restart();
+await restart();
 $('restart').addEventListener('click', restart);
 
 let playing = true;
