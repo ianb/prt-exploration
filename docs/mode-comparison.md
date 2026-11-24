@@ -110,3 +110,27 @@ three times:
 **The bigger pattern** is that transit is reliably slow rather than
 occasionally terrible. About 85% of trips take at least twice as long as
 driving, and a quarter to a third take at least three times as long.
+
+## Trips to "odd places"
+
+The trips above follow the survey, so they go where trips usually go. A trip
+to an unusual destination (an event venue, a park, someone's house across
+town) isn't weighted that way. `scripts/odd-trips.mjs` picks origin and
+destination as random census blocks anywhere in the city, unweighted, leaving
+between 7 and 9 PM on a weekday.
+
+**PRT is estimated, not simulated, here:**
+- free-flow route time, since there's no congestion at that hour;
+- plus a 1-minute wait;
+- plus boarding and getting off;
+- plus the walks.
+
+| 1,500 random trips, median 6.1 km | Median | 75th pct | 90th pct | Worst | Over 45 min | Over 60 min |
+|---|---|---|---|---|---|---|
+| Transit | 48 min | 60 | 71 | 121 | 58% | 26% |
+| PRT (walking) | 25 min | 32 | 38 | 59 | 3% | 0% |
+
+For trips that aren't between common places, which are also longer, transit
+over 45 minutes is the norm, and a quarter take over an hour in the evening.
+PRT's on-demand, nonstop service doesn't depend on a destination being
+popular, so it stays at about half the time.
