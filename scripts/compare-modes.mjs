@@ -115,7 +115,7 @@ for (const [, wait, ride, , , o, d, t0] of sample) {
   const tr = transitTime(T, A.p, B.p, dep);
   let trBest = tr;
   for (let k = 1; k <= 10; k++) trBest = Math.min(trBest, transitTime(T, A.p, B.p, dep + k * 180) );
-  rows.push({ km, prtWalk: (accW + wait + ride) / 60, prtBike: (accB + wait + ride) / 60, transit: tr / 60, transitTimed: trBest / 60, car: carMinutes(km), bike: (km * 1300) / ACC.bike / 60 + 1 });
+  rows.push({ A: A.p, B: B.p, dep, km, prtWalk: (accW + wait + ride) / 60, prtBike: (accB + wait + ride) / 60, transit: tr / 60, transitTimed: trBest / 60, car: carMinutes(km), bike: (km * 1300) / ACC.bike / 60 + 1 });
 }
 const bands = [
   [0.5, 2],
@@ -129,7 +129,7 @@ const med = (xs) => {
   return s.length ? s[s.length >> 1] : null;
 };
 const f = (x) => (x == null ? '    –' : x.toFixed(1).padStart(5));
-console.log(`${rows.length} trips, 4-5 PM-style demand from ${opts.hourFrom}:00, transit schedule for ${date}`);
+console.log(`${rows.length} trips, survey-model demand for ${opts.hourFrom}:00-${opts.hourTo}:00, transit schedule for ${date}`);
 console.log('Median door-to-door minutes on the same block-to-block trips:');
 console.log('distance    PRT walk  PRT bike  transit  transit*  car    bike   trips   PRT(walk) beats transit');
 for (const [a, b] of bands) {
@@ -140,3 +140,27 @@ for (const [a, b] of bands) {
 const all = (k) => med(rows.map((x) => x[k]));
 console.log(`${'all'.padEnd(10)} ${f(all('prtWalk'))}    ${f(all('prtBike'))}    ${f(all('transit'))}   ${f(all('transitTimed'))}  ${f(all('car'))}  ${f(all('bike'))}  ${String(rows.length).padStart(5)}   ${((100 * rows.filter((x) => x.prtWalk < x.transit).length) / rows.length).toFixed(0)}%`);
 console.log('transit* = leaving at the best moment within the next 30 minutes (timed to the schedule)');
+
+// How bad does it get? Spread and worst cases, not just medians.
+const pct = (xs, p) => {
+  const s = xs.filter((x) => x != null).sort((a, b) => a - b);
+  return s[Math.min(s.length - 1, Math.floor(s.length * p))];
+};
+console.log('\nSpread (minutes): 75th / 90th / worst');
+for (const k of ['prtWalk', 'transit', 'transitTimed', 'car']) {
+  const xs = rows.map((x) => x[k]);
+  console.log(`  ${k.padEnd(13)} ${pct(xs, 0.75).toFixed(1)} / ${pct(xs, 0.9).toFixed(1)} / ${pct(xs, 1).toFixed(1)}`);
+}
+const share = (f) => `${((100 * rows.filter(f).length) / rows.length).toFixed(0)}%`;
+console.log(`Transit over 45 min: ${share((x) => x.transit > 45)}; over 60 min: ${share((x) => x.transit > 60)}`);
+console.log(`Transit at least 2x the car: ${share((x) => x.transit >= 2 * x.car)}; at least 3x: ${share((x) => x.transit >= 3 * x.car)}`);
+console.log(`Transit at least 2x PRT (walking): ${share((x) => x.transit >= 2 * x.prtWalk)}; PRT at least 2x transit: ${share((x) => x.prtWalk >= 2 * x.transit)}`);
+console.log(`PRT (walking) over 45 min: ${share((x) => x.prtWalk > 45)}`);
+const ratio = rows.filter((x) => x.km >= 2).map((x) => x.transit / x.prtWalk);
+console.log(`Trips over 2 km, transit / PRT: median ${pct(ratio, 0.5).toFixed(2)}, 90th ${pct(ratio, 0.9).toFixed(2)}, worst ${pct(ratio, 1).toFixed(2)}`);
+// worst transit trips relative to distance
+const { unproject } = await import('../src/geo.js');
+const fmt = (p) => unproject(p).reverse().map((v) => v.toFixed(4)).join(',');
+console.log('\nWorst transit trips (by minutes per km, trips over 2 km):');
+for (const x of rows.filter((r) => r.km >= 2).sort((a, b) => b.transit / b.km - a.transit / a.km).slice(0, 8))
+  console.log(`  ${x.km.toFixed(1)} km: transit ${x.transit.toFixed(0)} min (timed ${x.transitTimed.toFixed(0)}), PRT ${x.prtWalk.toFixed(0)}, car ${x.car}  from ${fmt(x.A)} to ${fmt(x.B)}`);

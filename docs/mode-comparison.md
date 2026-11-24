@@ -75,3 +75,38 @@ being compared:
 
 So the router is a fair stand-in for what riders actually experience, and the
 same-trip comparison above can be trusted at the level of medians.
+
+## How bad do transit trips get?
+
+Medians hide the hard trips, so here is the spread on the same trips at
+three times:
+
+| | Weekday 4–5 PM | Weekday 9–10 PM | Sunday 2–3 PM |
+|---|---|---|---|
+| Transit: median / 90th percentile / worst (min) | 24.6 / 41.3 / 84 | 26.6 / 45.5 / 111 | 23.9 / 40.6 / 78 |
+| PRT walking: median / 90th / worst (min) | 15.6 / 29.4 / 66 | 15.4 / 25.3 / 57 | 15.5 / 25.0 / 49 |
+| Transit over 45 minutes | 6% | 11% | 6% |
+| Transit over 60 minutes | 1% | 2% | 1% |
+| Transit at least 2× the car | 85% | 87% | 81% |
+| Transit at least 3× the car | 26% | 36% | 23% |
+| Transit at least 2× PRT | 24% | 35% | 25% |
+| PRT faster than transit | 80% | 87% | 85% |
+
+**Why the tail isn't worse:**
+
+- **Minneapolis's network is dense.** Inside the city, almost every place
+  is near a frequent route, so few trips need more than one transfer.
+  Truly bad trips tend to be suburban, or across the city late at night.
+- **The trips are mostly short** (median about 2.8 km), and walking the
+  whole way caps the worst short trips.
+- **The router is generous to transit:**
+  - perfectly on-time buses;
+  - no buffer for transfers;
+  - straight-line walking.
+
+  Real hard trips also cost things this doesn't measure: missed
+  connections, uncertainty, and waiting outside in a Minneapolis winter.
+
+**The bigger pattern** is that transit is reliably slow rather than
+occasionally terrible. About 85% of trips take at least twice as long as
+driving, and a quarter to a third take at least three times as long.
