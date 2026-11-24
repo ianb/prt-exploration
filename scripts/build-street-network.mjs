@@ -46,10 +46,12 @@ const P = {
   connectMinRatio: 1.3, // only add a shortcut where the network route is this much longer than the street route
   layout: 'lattice', // 'lattice' (parallel one-way lines on through streets) or 'greedy' (corridors by coverage)
   latticeMinLineKm: 2.5, // a street must run this far to be a lattice line (long lines keep routes direct)
-  latticeSpacing: 800, // m between parallel lines
-  latticeSpacingDense: 400, // m between parallel lines where activity is dense
+  latticeSpacing: 600, // m between parallel lines (600 beat 800 and 400 on door-to-door time)
+  latticeSpacingDense: 300, // m between parallel lines where activity is dense
   latticeDenseFactor: 3, // "dense" = this many times the city's average people+jobs per km2
   latticeMinGainPerKm: 0.002, // stop adding lines to a family below this share of its activity per km
+  fillKm: 25, // budget for street pieces that reach people still far from any line
+  fillMinGainPerKm: 0.0015, // ...each must reach at least this share of all people+jobs per km
   directShortcutKm: 0, // extra one-way street length added where one-way routes are much longer than street routes
   turnPenalty: 250, // m added per change of street when closing loops, so lines run straight on
   rampX: 70, // m from junction centre to diverge / merge points
@@ -58,9 +60,9 @@ const P = {
   stationHalfSpan: 85, // diverge-to-centre (m): 60 m to brake from 15 m/s, 60 m to accelerate back
   berthHalfLength: 25,
   stationOffset: 9,
-  stationMinSep: 300,
-  stationMinGain: 0.0002,
-  stationTargetCoverage: 0.95,
+  stationMinSep: 200,
+  stationMinGain: 0.0001,
+  stationTargetCoverage: 0.995,
   berths: 10,
   vMain: 15,
   vStation: 8,
@@ -401,7 +403,10 @@ function latticeSelect() {
     lines.push({ links: chain, pts, len, name: l0.name });
   }
   // family of each line by its overall bearing
-  const DT = { c: [600, 3200], r: 1300, angle: 59 };
+  // Downtown, the University and the neighbourhoods by the river follow a
+  // street grid rotated to about 60 degrees; the rest of the city is aligned
+  // north-south / east-west. Each place is served by the families of its own grid.
+  const DT = { angle: 60 };
   const famOf = (ln) => {
     // length-weighted mean direction, mod 90
     let sx = 0;
@@ -421,11 +426,12 @@ function latticeSelect() {
     const end0 = ln.pts[0];
     const end1 = ln.pts[ln.pts.length - 1];
     const along = Math.abs(end1[0] - end0[0]) > Math.abs(end1[1] - end0[1]) ? 'EW' : 'NS';
-    if (dist(mid, DT.c) < DT.r && near(a90, DT.angle)) {
+    if (near(a90, DT.angle)) {
       const ang = Math.atan2(end1[1] - end0[1], end1[0] - end0[0]) * (180 / Math.PI);
       const rel = (((ang - DT.angle) % 180) + 180) % 180;
       return rel < 45 || rel > 135 ? 'dtA' : 'dtB';
     }
+    void mid;
     if (near(a90, 0)) return along;
     return null;
   };
@@ -436,7 +442,34 @@ function latticeSelect() {
   const cityDens = W / 140; // ~140 km^2 of land
   const spacingAt = (p) => (densAt(p) > P.latticeDenseFactor * cityDens ? P.latticeSpacingDense : P.latticeSpacing);
   const blockSpacing = blocks.map((b) => (b.w > 0 ? spacingAt(b.p) : P.latticeSpacing));
-  const inDT = blocks.map((b) => dist(b.p, DT.c) < DT.r);
+  // which grid each block sits in, from the bearings of streets within 500 m
+  const rotLen = new Map();
+  const regLen = new Map();
+  const cellK = (p) => `${Math.floor(p[0] / 250)},${Math.floor(p[1] / 250)}`;
+  for (const l of links)
+    for (let i = 1; i < l.pts.length; i++) {
+      const a = l.pts[i - 1];
+      const b = l.pts[i];
+      const L = dist(a, b);
+      const a90 = (((Math.atan2(b[1] - a[1], b[0] - a[0]) * 180) / Math.PI) % 90 + 90) % 90;
+      const k = cellK(a);
+      const nearA = (x, y) => Math.min(Math.abs(x - y), 90 - Math.abs(x - y)) < 12;
+      if (nearA(a90, DT.angle)) rotLen.set(k, (rotLen.get(k) || 0) + L);
+      else if (nearA(a90, 0)) regLen.set(k, (regLen.get(k) || 0) + L);
+    }
+  const inDT = blocks.map((b) => {
+    let r = 0;
+    let g = 0;
+    const cx = Math.floor(b.p[0] / 250);
+    const cy = Math.floor(b.p[1] / 250);
+    for (let dx = -2; dx <= 2; dx++)
+      for (let dy = -2; dy <= 2; dy++) {
+        r += rotLen.get(`${cx + dx},${cy + dy}`) || 0;
+        g += regLen.get(`${cx + dx},${cy + dy}`) || 0;
+      }
+    return r > g;
+  });
+  console.log(`blocks on the rotated grid: ${inDT.filter(Boolean).length} of ${blocks.length}`);
   let chosen = 0;
   for (const fam of fams) {
     const famLines = lines.filter((l) => l.fam === fam);
@@ -483,6 +516,44 @@ function latticeSelect() {
     });
   }
   console.log(`lattice: ${chosen} street lines chosen from ${lines.length} candidates`);
+  fillGaps();
+}
+
+// Fill gaps: anywhere people and jobs are still far from a line, add street
+// pieces (about a mile of one street at a time) that reach them, connected to
+// the network, within a small budget.
+function fillGaps() {
+  let added = 0;
+  for (;;) {
+    if (added > P.fillKm * 1000) break;
+    const nodesSel = selNodes();
+    let best = null;
+    let bs = 0;
+    for (const pc of pieces) {
+      if (pc.taken || pc.links.every((l) => selected.has(l))) continue;
+      let touches = false;
+      for (const n of pc.nodes)
+        if (nodesSel.has(n)) {
+          touches = true;
+          break;
+        }
+      if (!touches) continue;
+      const g = pieceGain(pc);
+      const sc = g / pc.cost;
+      if (sc > bs) {
+        bs = sc;
+        best = pc;
+      }
+    }
+    if (!best || pieceGain(best) / W / (best.len / 1000) < P.fillMinGainPerKm) break;
+    best.taken = true;
+    for (const l of best.links)
+      if (!selected.has(l)) {
+        select(l);
+        added += l.len;
+      }
+  }
+  console.log(`gap filling: ${(added / 1000).toFixed(1)} km added, coverage ${(coveredW / W).toFixed(3)}`);
 }
 console.log(`corridors: ${selected.size} links, ${Math.round([...selected].reduce((a, l) => a + l.len, 0) / 1000)} km, coverage ${(coveredW / W).toFixed(3)}`);
 

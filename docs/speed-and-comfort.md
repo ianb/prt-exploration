@@ -139,3 +139,52 @@ Median guideway route ÷ straight-line distance between station pairs:
 - **What would:** closing the rest of the gap to the idealized grid needs
   more regular, complete lines, and that's limited by where Minneapolis's
   long through streets actually run.
+
+## Denser stations and lines
+
+Walking was the biggest part of door-to-door time, so I tested what
+denser stations buy. All runs are suspended comfort, 4–5 PM, 7,500
+trips/hour, with about 3,100 vehicles each.
+
+**The University was a gap.** Almost half of all walking came from the 14%
+of people and jobs more than 800 m from a station. The largest cluster was
+the University of Minnesota (Dinkytown, Stadium Village, Prospect Park),
+about 74,000 people and jobs. Those streets, like downtown's and the
+riverfront neighbourhoods', follow a grid rotated to about 60°, and the
+lattice only recognized that grid inside a circle around downtown. Now
+each line is classified by its own bearing, and each place is served by
+the grid its nearby streets follow. A gap-filling pass also adds up to
+25 km of street pieces that reach people still far from any line.
+
+| Version | Street miles | Station sites | Avg walk | Within ¼ mi | Within ½ mi | Route ÷ straight (median) |
+|---|---|---|---|---|---|---|
+| Previous (800 m lines, 300 m min station gap) | 167 | 310 | 473 m | 69% | 86% | 1.88 |
+| University fixed + gap fill | 190 | 338 | 329 m | 81% | 96% | 2.03 |
+| …and stations 200 m apart | 190 | 387 | 319 m | 83% | 96% | 2.04 |
+| …lines 600 m apart, stations 200 m apart (**new default**) | 193 | 390 | 329 m | 80% | 96% | 1.84 |
+| …lines 600 m apart, stations 300 m apart | 193 | 333 | 340 m | 78% | 96% | 1.83 |
+| …lines 400 m apart | 217 | 358 | 325 m | 81% | 97% | 1.86 |
+
+Door to door, median minutes:
+
+| Distance | Previous | New default | Car | Transit | Bike |
+|---|---|---|---|---|---|
+| 1–2 km | 19.6 | 14.9 | 7 | 21 | 14 |
+| 2–3 km | 22.0 | 16.4 | 11 | 20 | 18 |
+| 3–5 km | 24.4 | 19.2 | 13 | 30 | 14 |
+| 5–8 km | 29.4 | 22.6 | 17 | 37 | 27 |
+| 8–15 km | 36.7 | 27.6 | 21 | 47 | – |
+
+- **Line coverage was what mattered.** Reaching the University and filling
+  the gaps cut the average walk from 473 to 329 m.
+- **Lines 600 m apart beat 800 m:** shorter walks and more direct routes
+  for about 26 more street miles.
+- **400 m apart is worse.** It adds 24 more miles plus more crossings and
+  merges, and with the same fleet spread over more track, waits and rides
+  get longer.
+- **Packing stations closer on the same lines barely changes the walk.**
+- **Net effect:** about 5–7 minutes faster than before at every distance.
+  PRT now clearly beats transit, is about even with biking up to 5 km and
+  faster beyond, and runs 5–8 minutes slower than driving.
+
+![The current network](img/lattice-network.png)
