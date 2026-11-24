@@ -169,3 +169,58 @@ The one-way network costs roughly 30% less, and trips take 0–3 minutes
 longer, mostly on longer trips. It carries 7,500 trips/hour comfortably. At
 12,000 it breaks down, and the merge controller's deadlock-breaking lets
 vehicles collide. That's a known simulator weakness, not a design result.
+
+## Coordinated merges and ride comfort
+
+**Booked merge slots** replace the earlier rule, where vehicles fell in at a
+merge by distance and a deadlock breaker could let them collide:
+
+- **Booking:** about 320 m before a merge, a vehicle books a time to pass it,
+  at least one headway from every other booking there and behind the vehicles
+  ahead of it on its own approach.
+- **Pacing:** it then cruises at whatever speed lets it accelerate back up and
+  cross the merge at line speed exactly on time.
+- **Station launches** book their slot before leaving the bay.
+- **Rebooking:** a vehicle that falls more than a slot behind books again.
+- **Safety:** in the last 50 m, vehicles also fall in behind whoever is
+  physically closer to the merge.
+
+**Comfort presets** (`comfort=rail` or `comfort=suspended`) set how hard
+vehicles corner and how gently they speed up and slow down:
+
+| | Sideways in curves | Speeding up | Slowing down |
+|---|---|---|---|
+| Rail (top-supported, little banking) | 1.2 m/s² | 1.5 m/s² | 2.0 m/s² |
+| Suspended (swings into curves) | 2.2 m/s² | 1.5 m/s² | 2.0 m/s² |
+
+Curve speed is √(sideways accel × radius), so a 30 m corner is taken at
+6.0 m/s (13 mph) on rail and 8.1 m/s (18 mph) suspended. These figures are
+reasonable assumptions, not researched comfort standards.
+
+**One-way network, 4–5 PM, 0.5 s headway:**
+
+| Trips/hour | Comfort | Average wait | Average ride | Waiting at end of hour | Collisions |
+|---|---|---|---|---|---|
+| 7,500 | rail | 148 s | 700 s | 807 | 0 |
+| 7,500 | suspended | 81 s | 579 s | 262 | 0 |
+| 12,000 | rail | 282 s | 846 s | 3,458 | 0 |
+| 12,000 | suspended | 193 s | 706 s | 2,552 | 0 |
+
+Median door to door, 7,500 trips/hour:
+
+| Distance | Rail | Suspended | Car | Transit | Bike |
+|---|---|---|---|---|---|
+| 1–2 km | 17.2 | 15.4 | 7 | 21 | 14 |
+| 3–5 km | 22.6 | 20.1 | 13 | 30 | 14 |
+| 5–8 km | 26.7 | 24.3 | 17 | 37 | 27 |
+| 8–15 km | 31.2 | 28.8 | 21 | 47 | – |
+
+- **Safety:** the merge system is collision-free at every load tried. The old
+  rule collided at 12,000 trips/hour.
+- **Cost of coordination:** it's somewhat conservative. With the old comfort
+  numbers it adds about 10% to ride time compared with the old rule, mostly
+  from vehicles slowing early for a booked slot.
+- **Rail versus suspended:** suspended is about 10–15% faster door to door.
+  Its curves are faster and that keeps queues shorter.
+- **Capacity:** about 7,500–10,000 trips/hour for this network. Beyond that,
+  riders queue at stations rather than vehicles jamming the line.

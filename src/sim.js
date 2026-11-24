@@ -1,23 +1,38 @@
 // PRT network simulator. Runs in Node and in the browser.
 //
 // Vehicles follow the car ahead with the Intelligent Driver Model (IDM), using
-// a time headway instead of rail-style brick-wall separation. At merges,
-// vehicles from both branches are ordered by distance to the merge point and
-// each follows its predecessor in that order ("virtual platoon"), so they
-// zip together without colliding. Vehicles leaving a station wait for a gap in
-// the main line before launching.
+// a time headway instead of rail-style brick-wall separation.
+//
+// Merges are coordinated with booked slots: as a vehicle comes within range of
+// a merge it books a time to pass it, spaced at least one headway from every
+// other booking there, and then caps its speed at the average needed to
+// arrive on time. A vehicle leaving a station books its
+// slot before it launches. Vehicles keep their order on each approach, so
+// bookings never conflict with the physical queue.
+//
+// Ride comfort comes from a preset: 'rail' (top-supported, little banking) or
+// 'suspended' (hangs below the beam and swings into curves, so riders feel
+// the force mostly through the seat and curves can be taken faster).
 
 import { cumulative, pointAlong } from './geo.js';
+
+// Comfort presets. Lateral = sideways acceleration felt in curves; accel and
+// decel = comfortable speeding up and slowing down for seated riders.
+export const COMFORT = {
+  rail: { latAccel: 1.2, accel: 1.5, decel: 2.0 },
+  suspended: { latAccel: 2.2, accel: 1.5, decel: 2.0 },
+};
 
 export const DEFAULTS = {
   dt: 0.25, // s
   headway: 1.0, // s, IDM time headway
   minGap: 1.5, // m, standstill gap
   vehicleLength: 3.0, // m
-  accel: 2.0, // m/s^2, comfortable
-  decel: 2.5, // m/s^2, comfortable
+  comfort: 'rail', // or 'suspended'; sets latAccel, accel and decel unless given
   maxDecel: 5.0, // m/s^2, emergency limit
-  horizon: 260, // m, look-ahead for leaders, merges and speed limits
+  vMain: 15, // m/s line speed cap (network edges may be lower)
+  horizon: 320, // m, look-ahead for leaders, merges and speed limits
+  launchSlack: 2, // s a station launch accepts its merge slot being later than it could get there
   fleetPerStation: 4,
   tripsPerHour: 12000,
   unloadTime: 15, // s
@@ -97,12 +112,21 @@ class Heap {
 
 export class Sim {
   constructor(net, opts = {}) {
-    this.p = { ...DEFAULTS, ...opts };
+    this.p = { ...DEFAULTS, ...(COMFORT[opts.comfort || DEFAULTS.comfort] || COMFORT.rail), ...opts };
     this.net = net;
     this.rand = mulberry32(this.p.seed);
     this.t = 0;
     const N = net.nodes.length;
     this.edges = net.edges.map((e) => ({ ...e, cum: cumulative(e.pts), queue: [] }));
+    // Curve speeds follow the comfort preset: v = sqrt(lateral accel x radius).
+    for (const e of this.edges) {
+      if (e.kind === 'turn') {
+        const r = e.radius ?? (e.vmax * e.vmax) / 1.5;
+        e.vmax = Math.min(this.p.vMain, Math.sqrt(this.p.latAccel * r));
+      } else e.vmax = Math.min(e.vmax, this.p.vMain);
+    }
+    this.mergeSlots = new Map(); // merge node -> bookings sorted by time
+    this.lastIn = new Map(); // "node|in-edge" -> latest booking from that approach
     this.outEdges = Array.from({ length: N }, () => []);
     this.inEdges = Array.from({ length: N }, () => []);
     for (const e of this.edges) {
@@ -562,13 +586,14 @@ export class Sim {
                 this.stations[alt].inbound++;
               }
               v.target = alt;
+              this.releaseAll(v); // route changed: book again
               if (v.pax) this.stats.diverted++;
             } else {
               v.waveOff = st.id;
             }
           }
         }
-        if (this.isMerge[n]) v.ahead.merges.push([n, d]);
+        if (this.isMerge[n]) v.ahead.merges.push([n, d, e.id]);
         const nextId = this.nextEdge(v, n);
         if (nextId < 0 || nextId === undefined) break;
         const ne = this.edges[nextId];
@@ -587,14 +612,152 @@ export class Sim {
         d += ne.len;
         e = ne;
       }
-      for (const [n, dist] of v.ahead.merges) {
+      let prevT = -Infinity;
+      let prevD = 0;
+      let prevV = 1;
+      for (const [n, dist, inEdge] of v.ahead.merges) {
         let l = this.mergeReg.get(n);
         if (!l) this.mergeReg.set(n, (l = []));
         l.push([dist, v]);
+        // book a slot (or a later one if this vehicle has fallen behind its booking);
+        // a merge further on can't be reached before the booking at the one before it allows
+        const vNode = Math.min(this.edges[inEdge].vmax, this.edges[this.outEdges[n][0]].vmax);
+        const eta = Math.max(this.t + this.etaPath(v, dist), prevT + (dist - prevD) / prevV);
+        const have = v.res?.get(n);
+        if (have && eta <= have.t + have.g) {
+          prevT = have.t;
+          prevD = dist;
+          prevV = Math.max(vNode, 1);
+          continue;
+        }
+        if (have) {
+          this.release(v, n);
+          this.stats.rebooks = (this.stats.rebooks || 0) + 1;
+        }
+        const sl = this.book(v, n, inEdge, eta, vNode, null, dist);
+        prevT = sl.t;
+        prevD = dist;
+        prevV = Math.max(vNode, 1);
       }
     }
-    for (const l of this.mergeReg.values()) l.sort((a, b) => a[0] - b[0] || a[1].id - b[1].id);
     void N;
+  }
+
+  // ---- merge slots --------------------------------------------------------------
+  // Time to cover d metres along this vehicle's path, respecting the speed
+  // limits ahead (curves, station lanes) and comfortable acceleration.
+  etaPath(v, d) {
+    const { accel: a, decel: b } = this.p;
+    const segs = [];
+    let at = 0;
+    let lim = this.edges[v.edge].vmax;
+    for (const [dl, vm] of v.ahead.limits) {
+      if (dl >= d) break;
+      if (dl > at) segs.push([dl - at, lim]);
+      at = dl;
+      lim = vm;
+    }
+    segs.push([d - at, lim]);
+    let t = 0;
+    let cur = v.v;
+    for (const [len, vm] of segs) {
+      if (len <= 0) continue;
+      if (cur < vm) {
+        const dA = (vm * vm - cur * cur) / (2 * a);
+        if (dA >= len) {
+          const ve = Math.sqrt(cur * cur + 2 * a * len);
+          t += (ve - cur) / a;
+          cur = ve;
+          continue;
+        }
+        t += (vm - cur) / a + (len - dA) / vm;
+      } else {
+        // slowing for this segment happens before it; approximate the loss
+        t += (cur - vm) ** 2 / (2 * b * Math.max(cur, 0.5)) + len / Math.max(vm, 0.5);
+      }
+      cur = vm;
+    }
+    return t;
+  }
+
+  // Time to cover d metres starting at speed v0 and settling at speed vc.
+  eta(d, v0, vc) {
+    const { accel: a, decel: b } = this.p;
+    if (v0 < vc) {
+      const dA = (vc * vc - v0 * v0) / (2 * a);
+      if (dA >= d) return (-v0 + Math.sqrt(v0 * v0 + 2 * a * d)) / a;
+      return (vc - v0) / a + (d - dA) / vc;
+    }
+    const dB = (v0 * v0 - vc * vc) / (2 * b);
+    if (dB >= d) return d / Math.max(0.5, (v0 + vc) / 2);
+    return (v0 - vc) / b + (d - dB) / Math.max(vc, 0.5);
+  }
+
+  // Cruise speed vc such that: cruise at vc, then accelerate to vNode just in
+  // time, covering dist in exactly T seconds. vNode if there is time to spare
+  // at full speed is not needed (on time or late).
+  paceSpeed(dist, T, vNode) {
+    const a = this.p.accel;
+    const time = (vc) => {
+      const dUp = (vNode * vNode - vc * vc) / (2 * a);
+      if (dUp >= dist) return Infinity; // can't both cruise slow and get up to speed
+      return (dist - dUp) / vc + (vNode - vc) / a;
+    };
+    if (T <= dist / vNode + 0.2) return vNode;
+    let lo = 0.3;
+    let hi = vNode;
+    if (time(lo) < T) return lo;
+    for (let k = 0; k < 30; k++) {
+      const mid = (lo + hi) / 2;
+      if (time(mid) > T) lo = mid;
+      else hi = mid;
+    }
+    return hi;
+  }
+
+  // Earliest time >= t0 at merge n that keeps the spacing from every booking,
+  // and keeps this approach's vehicles in the order they're queued.
+  freeSlot(n, inEdge, t0, g, dist = Infinity) {
+    const list = this.mergeSlots.get(n) || [];
+    // stay behind vehicles physically ahead on the same approach
+    let t = t0;
+    for (const s of list) {
+      if (s.inEdge !== inEdge) continue;
+      const sd = s.v.ahead?.merges.find((m) => m[0] === n)?.[1];
+      if (sd !== undefined && sd < dist) t = Math.max(t, s.t + Math.max(g, s.g));
+    }
+    for (const s of list) {
+      const sep = Math.max(g, s.g);
+      if (t <= s.t - sep) break;
+      if (t < s.t + sep) t = s.t + sep;
+    }
+    return t;
+  }
+
+  book(v, n, inEdge, eta, vNode, t = null, dist = Infinity) {
+    const g = this.p.headway + (this.p.vehicleLength + this.p.minGap) / Math.max(vNode, 1);
+    const slot = { t: t ?? this.freeSlot(n, inEdge, eta, g, dist), g, v, vNode, inEdge };
+    let list = this.mergeSlots.get(n);
+    if (!list) this.mergeSlots.set(n, (list = []));
+    let i = list.length;
+    while (i > 0 && list[i - 1].t > slot.t) i--;
+    list.splice(i, 0, slot);
+    if (!v.res) v.res = new Map();
+    v.res.set(n, slot);
+    return slot;
+  }
+
+  release(v, n) {
+    const slot = v.res?.get(n);
+    if (!slot) return;
+    const list = this.mergeSlots.get(n);
+    const i = list.indexOf(slot);
+    if (i >= 0) list.splice(i, 1);
+    v.res.delete(n);
+  }
+
+  releaseAll(v) {
+    if (v.res) for (const n of [...v.res.keys()]) this.release(v, n);
   }
 
   // A station that has to wave off arrivals sends one idle vehicle away.
@@ -624,27 +787,20 @@ export class Sim {
     return a * (free - Math.pow(sStar / Math.max(gap, 0.1), 2));
   }
 
-  // Can a vehicle waiting in the berth launch now without cutting off main-line traffic?
-  launchClear(v, force = false) {
+  // A vehicle waiting in a bay launches once it holds a merge slot it can
+  // make: it books the slot first, so main-line traffic is never cut off.
+  // After maxLaunchWait it takes the next free slot, however late.
+  tryLaunch(v, force) {
     const st = this.stations[v.dockStation];
     const ex = this.edges[st.exit];
-    // room at the start of the exit lane
     if (ex.queue.length && ex.queue[ex.queue.length - 1].pos < this.p.vehicleLength + this.p.minGap + 3) return false;
-    if (force) return true;
-    const sm = ex.to;
-    const reg = this.mergeReg.get(sm) || [];
-    const dist = ex.len;
-    const vm = this.edges[st.exit].vmax;
-    // time to reach the merge accelerating from rest (capped at exit speed)
-    const tAcc = vm / this.p.accel;
-    const dAcc = (vm * vm) / (2 * this.p.accel);
-    const tMe = dist <= dAcc ? Math.sqrt((2 * dist) / this.p.accel) : tAcc + (dist - dAcc) / vm;
-    const window = 2 * this.p.headway + 0.5; // enough room to slot in at one headway either side
-    for (const [d, u] of reg) {
-      if (this.edges[u.edge].station === st.id) continue;
-      const tU = d / Math.max(u.v, 1);
-      if (Math.abs(tU - tMe) < window) return false;
-    }
+    const n = ex.to;
+    const vNode = Math.min(ex.vmax, this.edges[this.outEdges[n][0]].vmax);
+    const eta = this.t + this.eta(ex.len, 0, vNode);
+    const g = this.p.headway + (this.p.vehicleLength + this.p.minGap) / Math.max(vNode, 1);
+    const t = this.freeSlot(n, ex.id, eta, g, ex.len);
+    if (t > eta + this.p.launchSlack && !force) return false;
+    this.book(v, n, ex.id, eta, vNode, t);
     return true;
   }
 
@@ -661,7 +817,7 @@ export class Sim {
         // the main line. After waiting a while it goes anyway, and main-line
         // traffic makes room at the merge (a vehicle can't wait forever).
         v.launchWait = (v.launchWait || 0) + this.p.dt;
-        if (!this.launchClear(v, v.launchWait > this.p.maxLaunchWait)) continue;
+        if (!this.tryLaunch(v, v.launchWait > this.p.maxLaunchWait)) continue;
         v.launchWait = 0;
         const st = this.stations[v.dockStation];
         st.slots[v.slot] = null;
@@ -685,16 +841,49 @@ export class Sim {
       v.blocker = v.ahead.leader || null;
       v.blockerVirtual = false;
       for (const [n, dist] of v.ahead.merges) {
-        const l = this.mergeReg.get(n);
-        if (!l) continue;
-        const i = l.findIndex((x) => x[1] === v);
+        const slot = v.res?.get(n);
+        if (!slot) continue;
+        // pace: cruise at the speed that, followed by a comfortable speed-up,
+        // crosses the merge at line speed exactly at the booked time
+        const vc = this.paceSpeed(dist, slot.t - this.t, slot.vNode);
+        if (vc < slot.vNode) {
+          const dUp = (slot.vNode * slot.vNode - vc * vc) / (2 * this.p.accel);
+          if (dist > dUp + 1) {
+            const ag = Math.max(-this.p.decel, Math.min(this.p.accel, (vc - v.v) / 1.5));
+            if (ag < a) {
+              a = ag;
+              v.blocker = null;
+              v.blockerVirtual = false;
+            }
+          }
+        }
+        // last 50 m: also fall in behind whoever is physically closer to the merge
+        if (dist < 50) {
+          const reg = this.mergeReg.get(n) || [];
+          let best = null;
+          for (const [pd, pv] of reg) if (pv !== v && pd < dist && (!best || pd > best[0])) best = [pd, pv];
+          if (best) {
+            const am = this.idm(v, dist - best[0] - L, best[1].v, v0);
+            if (am < a) {
+              a = am;
+              v.blocker = best[1];
+              v.blockerVirtual = true;
+            }
+          }
+        }
+        // and never close on whoever holds the slot before ours, if it hasn't passed yet
+        const list = this.mergeSlots.get(n);
+        const i = list.indexOf(slot);
         if (i > 0) {
-          const [pd, pv] = l[i - 1];
-          const am = this.idm(v, dist - pd - L, pv.v, v0);
-          if (am < a) {
-            a = am;
-            v.blocker = pv;
-            v.blockerVirtual = true;
+          const pv = list[i - 1].v;
+          const pd = pv.ahead?.merges.find((m) => m[0] === n)?.[1];
+          if (pd !== undefined && pd < dist) {
+            const am = this.idm(v, dist - pd - L, pv.v, v0);
+            if (am < a) {
+              a = am;
+              v.blocker = pv;
+              v.blockerVirtual = true;
+            }
           }
         }
       }
@@ -724,6 +913,7 @@ export class Sim {
         }
         v.pos -= e.len;
         e.queue.shift();
+        if (v.res?.has(n)) this.release(v, n);
         const ne = this.edges[nextId];
         ne.queue.push(v);
         ne.count = (ne.count || 0) + 1;

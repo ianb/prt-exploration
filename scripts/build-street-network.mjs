@@ -991,7 +991,7 @@ for (const [J, ins] of byNodeIn) {
           pts.push(add(c, add(mul(right(uIn), -P.twinOffset * 0), v)));
         }
         pts.push(M);
-        edge(bi.d, bo.m, pts, Math.sqrt(P.latAccel * Rr), 'turn');
+        edge(bi.d, bo.m, pts, Math.sqrt(P.latAccel * Rr), 'turn', { radius: Rr });
         turnarounds++;
         continue;
       }
@@ -1015,7 +1015,7 @@ for (const [J, ins] of byNodeIn) {
       const a = node(A);
       const bn = node(Bp);
       edge(bi.d, a, [D, A], P.vMain, 'rampLane');
-      edge(a, bn, curve, Math.min(P.vMain, Math.sqrt(P.latAccel * rEff)), 'turn');
+      edge(a, bn, curve, Math.min(P.vMain, Math.sqrt(P.latAccel * rEff)), 'turn', { radius: Math.round(rEff * 10) / 10 });
       edge(bn, bo.m, [Bp, M], P.vMain, 'rampLane');
       turnRamps++;
     }
