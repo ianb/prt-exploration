@@ -20,6 +20,14 @@ The first full-city layout and simulation, with what it showed.
 - **Water.** Segments that cross a lake are dropped. River crossings are kept
   as bridges only where both ends are in the city.
 
+![A few half-mile squares: alternating one-way lines, loops, stations, and quarter-mile walk zones](img/grid.png)
+
+![A crossing: two one-way lines on different levels, joined by two turn ramps](img/crossing.png)
+
+![A station: off-line, with exit lane, sawtooth bays and a launch lane](img/station.png)
+
+The diagrams are drawn from the network data by `scripts/diagrams.mjs`.
+
 ### Why a half-mile grid gives a quarter-mile walk
 
 People walk on streets, so walking distance is measured along the street

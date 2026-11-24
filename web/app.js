@@ -22,6 +22,11 @@ function resize() {
   canvas.height = H * dpr;
   if (!resize.done) {
     view.scale = Math.min(W / (bounds.x1 - bounds.x0), H / (bounds.y1 - bounds.y0)) * 0.92;
+    // Optional starting view: ?x=<m east>&y=<m north>&z=<pixels per metre>
+    const q = new URLSearchParams(location.search);
+    if (q.has('x')) view.cx = Number(q.get('x'));
+    if (q.has('y')) view.cy = Number(q.get('y'));
+    if (q.has('z')) view.scale = Number(q.get('z'));
     resize.done = true;
   }
 }
@@ -94,7 +99,7 @@ await restart();
 $('restart').addEventListener('click', restart);
 
 let playing = true;
-let speed = 20;
+let speed = Number(new URLSearchParams(location.search).get('speed')) || 20;
 $('play').addEventListener('click', () => {
   playing = !playing;
   $('play').textContent = playing ? 'Pause' : 'Play';
