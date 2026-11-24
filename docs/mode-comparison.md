@@ -47,3 +47,31 @@ Median door-to-door minutes, 1,490 trips:
 The earlier tables' transit column (in `street-network.md` and
 `speed-and-comfort.md`) is the self-selected survey figure and should be read
 with this in mind.
+
+## Checking the transit router against real trips
+
+`scripts/validate-transit.mjs` routes every transit trip in the 2023 survey
+with both ends in Minneapolis (470 trips over 0.5 km) at its actual departure
+time, from its origin block group to its destination block group. Each block
+group is placed at its people+jobs-weighted centre. The router's time is
+then compared with the duration the rider reported.
+
+| Straight-line distance | Trips | Median reported | Median router | Router ÷ reported, per trip: median (middle half) |
+|---|---|---|---|---|
+| 0.5–3 km | 293 | 21.0 min | 20.7 min | 0.98 (0.70–1.41) |
+| 3–6 km | 130 | 35.0 min | 34.5 min | 1.01 (0.70–1.37) |
+| 6–20 km | 47 | 42.0 min | 41.4 min | 0.97 (0.78–1.23) |
+| All | 470 | 26.0 min | 25.4 min | 0.99 (0.72–1.38) |
+
+**Typical times match closely.** The router is within about 1–2% of
+reported times at every distance.
+
+**Individual trips scatter by about ±30%.** That's expected given what's
+being compared:
+- the survey only gives block groups, not exact addresses;
+- the survey is from 2023 and the schedule from 2026;
+- reported times are rounded and include the rider's own choices (a slower
+  route, a stop on the way).
+
+So the router is a fair stand-in for what riders actually experience, and the
+same-trip comparison above can be trusted at the level of medians.
