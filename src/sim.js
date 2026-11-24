@@ -624,8 +624,8 @@ export class Sim {
             const a = this.stations[v.pax.origin];
             const b = this.stations[v.pax.dest];
             // per-trip log: straight-line metres, wait s, ride s (boarding to off the vehicle)
-            // [straight-line m, wait s, ride s (board to off), guideway m travelled, s spent moving]
-            this.tripLog.push([Math.hypot(a.x - b.x, a.y - b.y), v.pax.wait, this.t - v.pax.tBoard + this.p.loadTime, (v.odo || 0) - v.pax.odo0, (v.moveT || 0) - v.pax.mt0]);
+            // [straight-line m, wait s, ride s (board to off), guideway m travelled, s spent moving, origin station, destination station, request time]
+            this.tripLog.push([Math.hypot(a.x - b.x, a.y - b.y), v.pax.wait, this.t - v.pax.tBoard + this.p.loadTime, (v.odo || 0) - v.pax.odo0, (v.moveT || 0) - v.pax.mt0, v.pax.origin, v.pax.dest, v.pax.t0]);
             v.pax = null;
           }
           v.state = 'idle';
