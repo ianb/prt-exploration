@@ -224,3 +224,57 @@ Median door to door, 7,500 trips/hour:
   Its curves are faster and that keeps queues shorter.
 - **Capacity:** about 7,500–10,000 trips/hour for this network. Beyond that,
   riders queue at stations rather than vehicles jamming the line.
+
+## Predictive empty-vehicle positioning
+
+Empty vehicles are now sent ahead of demand:
+
+- **Planning:** every 30 s, each station's expected departures over the next
+  10 minutes (from the travel-survey model, hour by hour) are compared with
+  the vehicles it will have. That counts idle vehicles, empties already
+  heading there, and loaded vehicles arriving in time.
+- **Moves:** stations that will be short get empties from the nearest
+  stations with more than they need, before riders show up.
+- **Start:** the fleet begins placed where the first trips will be.
+- **Reactive dispatch** (calling a vehicle once someone is waiting) still
+  runs as a backstop.
+
+4–5 PM, 7,500 trips/hour, 2,730 vehicles:
+
+| | Average wait before | Average wait after | Median wait after |
+|---|---|---|---|
+| Rail | 148 s | 67 s | 0 s |
+| Suspended | 81 s | 31 s | 0 s |
+
+**3–7 PM, suspended, 3,822 vehicles.** Demand follows the survey's hourly
+pattern, peaking at 7,500 trips/hour at 4 PM.
+
+- **Citywide:** median wait 0 s all afternoon, 90th percentile under 4.5
+  minutes, with 1,600 vehicles idle at the end.
+- **Downtown runs short.** 224 idle vehicles at 3 PM drain to about 10–30
+  by 5 PM while 100–370 people wait. 70–130 empties are on their way in at
+  any moment, but they can't arrive fast enough. That's the limited
+  guideway into the core: the same downtown capacity limit seen with the
+  grid.
+
+## Route length and speed
+
+Measured on actual simulated trips, 4–5 PM, 7,500 trips/hour, trips of 1 km
+or more:
+
+| | Rail | Suspended |
+|---|---|---|
+| Mean straight-line trip | 2.75 km | 2.80 km |
+| Mean guideway distance travelled | 6.80 km | 7.00 km |
+| Guideway ÷ straight line: mean / median | 2.69 / 2.19 | 2.75 / 2.21 |
+| Line top speed | 54 km/h (34 mph) | 54 km/h |
+| Average speed while moving | 34.6 km/h (21.5 mph) | 42.7 km/h (26.5 mph) |
+| Ride speed along the guideway, boarding to getting off | 33.2 km/h | 40.6 km/h |
+| Ride speed as the crow flies | 13.4 km/h (8.3 mph) | 16.3 km/h (10.1 mph) |
+
+The vehicles aren't slow: suspended averages 80% of top speed while moving.
+**The route is.** A typical trip travels 2.2–2.7 times the straight-line
+distance. Bringing that down to about 1.3× (a street grid's usual ratio)
+would roughly halve ride times. The causes are the one-way network's large,
+irregular loops, few cross connections, and some lines dropped where no
+loop could be closed.

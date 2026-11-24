@@ -42,7 +42,9 @@ export const DEFAULTS = {
   soonS: 120, // a loaded vehicle this close counts as supply for the station
   maxEmptyS: 480, // don't send an empty vehicle from further than this
   keepIdle: 2, // idle vehicles a station keeps before lending them out
-  rebalanceS: 20,
+  rebalanceS: 30,
+  forecastS: 600, // s ahead that predictive rebalancing plans for
+  placeByDemand: true, // start the fleet where the first trips will be
   maxLaunchWait: 8, // s a ready vehicle waits for a gap before launching anyway
   demandData: null, // origin-destination table; null = synthetic placeholder demand
   direction: 'am',
@@ -151,6 +153,7 @@ export class Sim {
     }
     this.buildRoutes();
     this.buildDemand();
+    if (!this.hours) this.originShare = this.originCdf ? this.originCdf.map((c, i) => c - (i ? this.originCdf[i - 1] : 0)) : null;
     this.vehicles = [];
     this.placeFleet();
     this.stats = { diverted: 0, boarded: 0, completed: 0, waitSum: 0, rideSum: 0, waitMax: 0, waveOffs: 0, emptyMoves: 0, minGap: Infinity, collisions: 0, generated: 0 };
@@ -300,20 +303,66 @@ export class Sim {
   // purpose) in proportion to the survey's trips in the chosen hours, an origin
   // station by attraction for that purpose, and a destination by attraction
   // times exp(-beta * km).
+  // Demand varies by hour: sim time 0 is hourFrom:00. tripsPerHour is the
+  // rate in the busiest hour of the window; other hours scale with the survey.
   buildModelDemand(m) {
     this.model = m;
-    const cls = [];
-    let acc = 0;
-    for (const [h, op, dp, n] of m.trips) {
-      if (h < this.p.hourFrom || h >= this.p.hourTo) continue;
-      cls.push([op, dp]);
-      this.classCdfRaw = this.classCdfRaw || [];
-      this.classCdfRaw.push((acc += n));
+    this.hours = [];
+    for (let h = this.p.hourFrom; h < this.p.hourTo; h++) {
+      const classes = [];
+      const raw = [];
+      let acc = 0;
+      for (const [hh, op, dp, n] of m.trips) {
+        if (hh !== h) continue;
+        classes.push([op, dp, n]);
+        raw.push((acc += n));
+      }
+      this.hours.push({ h, classes, cdf: raw.map((x) => x / acc), total: acc });
     }
-    this.classes = cls;
-    this.classCdf = this.classCdfRaw.map((x) => x / acc);
+    const peak = Math.max(...this.hours.map((x) => x.total));
+    for (const hr of this.hours) hr.factor = hr.total / peak;
     this.attrCdf = m.attraction ? Object.fromEntries(m.purposes.map((p) => [p, this.cdfOf(m.attraction[p])])) : {};
+    // share of departures from each station, per hour (for forecasting)
+    const S = this.stations.length;
+    const attrShare = Object.fromEntries(
+      m.purposes.map((p) => {
+        const a = m.attraction[p];
+        const tot = a.reduce((x, y) => x + y, 0) || 1;
+        return [p, a.map((x) => x / tot)];
+      })
+    );
+    for (const hr of this.hours) {
+      hr.share = new Float64Array(S);
+      for (const [op, , n] of hr.classes) {
+        const sh = attrShare[m.purposes[op]];
+        for (let o = 0; o < S; o++) hr.share[o] += (n / hr.total) * sh[o];
+      }
+    }
     this.destCache = new Map();
+  }
+
+  hourIndex(t) {
+    if (!this.hours) return 0;
+    return Math.min(this.hours.length - 1, Math.max(0, Math.floor(t / 3600)));
+  }
+
+  rateFactor(t) {
+    return this.hours ? this.hours[this.hourIndex(t)].factor : 1;
+  }
+
+  // Expected trips starting at station o between t0 and t1 (from the demand model).
+  expectedDepartures(o, t0, t1) {
+    const lam = this.p.tripsPerHour / 3600;
+    if (!this.hours) return lam * (t1 - t0) * this.originShare[o];
+    let tot = 0;
+    for (let t = t0; t < t1; ) {
+      const i = this.hourIndex(t);
+      const end = Math.min(t1, (i + 1) * 3600);
+      const span = Math.max(0, end - t) || t1 - t;
+      tot += lam * this.hours[i].factor * this.hours[i].share[o] * span;
+      t += span;
+    }
+    return tot;
   }
 
   cdfOf(w) {
@@ -324,7 +373,8 @@ export class Sim {
 
   modelTrip() {
     const m = this.model;
-    const [op, dp] = this.classes[this.pick(this.classCdf)];
+    const hr = this.hours[this.hourIndex(this.t)];
+    const [op, dp] = hr.classes[this.pick(hr.cdf)];
     const o = this.pick(this.attrCdf[m.purposes[op]]);
     const key = dp * this.stations.length + o;
     let cdf = this.destCache.get(key);
@@ -372,9 +422,28 @@ export class Sim {
   // Stations have sawtooth berths: each docked vehicle sits in its own bay
   // off the berth lane and can leave without waiting for the others.
   placeFleet() {
+    const S = this.stations.length;
+    const total = this.p.fleetPerStation * S;
+    let alloc = new Array(S).fill(this.p.fleetPerStation);
+    if (this.p.placeByDemand && (this.hours || this.originShare)) {
+      const need = this.stations.map((st) => this.expectedDepartures(st.id, 0, 1200));
+      const sum = need.reduce((a, b) => a + b, 0) || 1;
+      alloc = need.map((x) => Math.max(1, Math.round((x / sum) * total)));
+      // fit within berths (leave room for arrivals), hand leftovers to the roomiest stations
+      let left = total - alloc.reduce((a, b) => a + b, 0);
+      alloc = alloc.map((a, i) => Math.min(a, this.stations[i].berths - 2));
+      left = total - alloc.reduce((a, b) => a + b, 0);
+      for (let i = 0; left > 0 && i < 50 * S; i++) {
+        const k = i % S;
+        if (alloc[k] < this.stations[k].berths - 2) {
+          alloc[k]++;
+          left--;
+        }
+      }
+    }
     for (const st of this.stations) {
       st.slots = new Array(st.berths).fill(null);
-      for (let k = 0; k < this.p.fleetPerStation && k < st.berths; k++) {
+      for (let k = 0; k < alloc[st.id] && k < st.berths; k++) {
         const v = { id: this.vehicles.length, edge: st.berth, pos: 0, v: 0, target: st.id, state: 'idle', station: st.id, timer: 0, pax: null, waveOff: -1 };
         this.vehicles.push(v);
         this.dock(v, st);
@@ -399,7 +468,7 @@ export class Sim {
     const { dt } = this.p;
     this.t += dt;
     while (this.nextArrival <= this.t) {
-      this.newPassenger();
+      if (this.rand() < this.rateFactor(this.nextArrival)) this.newPassenger();
       this.nextArrival = this.sampleArrival(this.nextArrival);
     }
     if (Math.floor(this.t / this.p.rebalanceS) !== Math.floor((this.t - dt) / this.p.rebalanceS)) this.rebalance();
@@ -439,25 +508,55 @@ export class Sim {
 
   // Every so often, stations with more idle vehicles than they need send one
   // to the nearest station that has none on hand or on the way.
+  // Predictive rebalancing. Every rebalanceS seconds, compare each station's
+  // expected departures over the next forecastS seconds (from the demand
+  // model) with the vehicles it will have: idle ones, empties on the way, and
+  // loaded vehicles arriving in time. Stations short of vehicles get empties
+  // sent from the nearest stations with more than they need, before the
+  // riders show up.
   rebalance() {
+    const W = this.p.forecastS;
+    const S = this.stations.length;
+    const N = this.net.nodes.length;
+    const soon = new Float64Array(S);
+    for (const v of this.vehicles) {
+      if (v.docked || v.state !== 'loaded') continue;
+      const e = this.edges[v.edge];
+      const eta = this.timeTo[v.target * N + e.to] + (e.len - v.pos) / e.vmax + this.p.unloadTime;
+      if (eta < W) soon[v.target]++;
+    }
+    const idle = new Int32Array(S);
+    const bal = new Float64Array(S);
     for (const st of this.stations) {
-      let idle = 0;
-      for (const v of st.slots) if (v && v.state === 'idle') idle++;
-      if (idle <= this.p.keepIdle || st.waiting.length) continue;
-      // only stations that are filling up lend vehicles out
-      if (st.berths - st.reserved >= 3) continue;
-      for (const sid of this.reach[st.id]) {
-        const t = this.stations[sid];
-        let have = t.inbound + t.waiting.length * -1;
-        for (const v of t.slots) if (v && v.state === 'idle') have++;
-        if (have < 1 && t.reserved < t.berths) {
-          this.dispatch(this.frontIdle(st), sid, 'reposition');
-          t.inbound++;
-          this.stats.emptyMoves++;
-          break;
-        }
+      for (const v of st.slots) if (v && v.state === 'idle') idle[st.id]++;
+      const need = this.expectedDepartures(st.id, this.t, this.t + W) + st.waiting.length;
+      bal[st.id] = idle[st.id] + st.inbound + soon[st.id] - need;
+    }
+    const deficits = this.stations.filter((st) => bal[st.id] < -0.5).sort((a, b) => bal[a.id] - bal[b.id]);
+    let moves = 0;
+    for (const d of deficits) {
+      let k = Math.min(3, Math.ceil(-bal[d.id]));
+      for (const sid of this.nearby[d.id]) {
+        if (k <= 0 || d.reserved + d.inbound >= d.berths) break;
+        if (this.stationTime(sid, d.id) > 1.5 * W) break;
+        const src = this.stations[sid];
+        if (bal[sid] < 1.5 || idle[sid] <= 0 || src.waiting.length) continue;
+        const v = this.frontIdle(src);
+        if (!v) continue;
+        this.dispatch(v, d.id, 'reposition');
+        d.inbound++;
+        bal[sid]--;
+        idle[sid]--;
+        bal[d.id]++;
+        k--;
+        moves++;
+        this.stats.emptyMoves++;
+        this.stats.predictiveMoves = (this.stats.predictiveMoves || 0) + 1;
       }
     }
+    // stations filling up with idle vehicles still lend them out
+    for (const st of this.stations) if (st.berths - st.reserved < 2 && idle[st.id] > 0 && bal[st.id] > 1) this.relieve(st);
+    return moves;
   }
 
   callEmpty(st) {
@@ -512,7 +611,8 @@ export class Sim {
             const a = this.stations[v.pax.origin];
             const b = this.stations[v.pax.dest];
             // per-trip log: straight-line metres, wait s, ride s (boarding to off the vehicle)
-            this.tripLog.push([Math.hypot(a.x - b.x, a.y - b.y), v.pax.wait, this.t - v.pax.tBoard + this.p.loadTime]);
+            // [straight-line m, wait s, ride s (board to off), guideway m travelled, s spent moving]
+            this.tripLog.push([Math.hypot(a.x - b.x, a.y - b.y), v.pax.wait, this.t - v.pax.tBoard + this.p.loadTime, (v.odo || 0) - v.pax.odo0, (v.moveT || 0) - v.pax.mt0]);
             v.pax = null;
           }
           v.state = 'idle';
@@ -534,6 +634,8 @@ export class Sim {
         this.stats.boarded++;
         this.stats.waitMax = Math.max(this.stats.waitMax, w);
         pax.tBoard = this.t + this.p.loadTime;
+        pax.odo0 = v.odo || 0;
+        pax.mt0 = v.moveT || 0;
         v.pax = pax;
         v.state = 'loading';
         v.timer = this.p.loadTime;
@@ -900,6 +1002,8 @@ export class Sim {
       const nv = Math.max(0, v.v + v.acc * dt);
       let ds = (v.v + nv) * 0.5 * dt;
       v.v = nv;
+      v.odo = (v.odo || 0) + ds;
+      v.moveT = (v.moveT || 0) + dt;
       if (ds <= 0) continue;
       let e = this.edges[v.edge];
       v.pos += ds;
@@ -983,6 +1087,7 @@ export class Sim {
       busiestLinkVph: Math.round((Math.max(...this.edges.filter((e) => e.kind === 'main').map((e) => e.count || 0)) * 3600) / this.t),
       collisions: s.collisions,
       deadlocksBroken: s.deadlocksBroken || 0,
+      predictiveMoves: s.predictiveMoves || 0,
     };
   }
 

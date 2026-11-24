@@ -74,6 +74,26 @@ const wmedian = (xs) => {
   for (const [v, w] of s) if ((acc += w) >= tot / 2) return v;
   return null;
 };
+// Route and speed: guideway distance travelled vs straight line, and speeds.
+function routeStats(log) {
+  const rows = log.filter((r) => r[0] >= 1000 && r[3] > 0);
+  const mean = (f) => rows.reduce((a, r) => a + f(r), 0) / rows.length;
+  const ratios = rows.map((r) => r[3] / r[0]).sort((a, b) => a - b);
+  return {
+    trips: rows.length,
+    meanStraightKm: mean((r) => r[0]) / 1000,
+    meanGuidewayKm: mean((r) => r[3]) / 1000,
+    ratioMean: mean((r) => r[3] / r[0]),
+    ratioMedian: ratios[ratios.length >> 1],
+    // average speed while the vehicle is moving, along the guideway
+    movingKmh: (rows.reduce((a, r) => a + r[3], 0) / rows.reduce((a, r) => a + r[4], 0)) * 3.6,
+    // guideway distance over whole ride (boarding to getting off, incl. dwell and launch wait)
+    rideKmh: (rows.reduce((a, r) => a + r[3], 0) / rows.reduce((a, r) => a + r[2], 0)) * 3.6,
+    // straight-line distance over whole ride
+    straightRideKmh: (rows.reduce((a, r) => a + r[0], 0) / rows.reduce((a, r) => a + r[2], 0)) * 3.6,
+  };
+}
+
 const fmt = (x) => (x == null ? '   –' : (x / 60).toFixed(1).padStart(5));
 console.log(JSON.stringify(sim.summary()));
 console.log('\nMedian door-to-door minutes by straight-line trip distance (PRT includes ~3 min walk each end):');
@@ -84,3 +104,6 @@ bands.forEach(([a, b], i) => {
   row.push(String(prt[i].door.length).padStart(8));
   console.log(row.join(' '));
 });
+const rs = routeStats(sim.tripLog);
+console.log(`\nRoute: mean straight-line ${rs.meanStraightKm.toFixed(2)} km, mean guideway ${rs.meanGuidewayKm.toFixed(2)} km; guideway/straight ratio mean ${rs.ratioMean.toFixed(2)}, median ${rs.ratioMedian.toFixed(2)}`);
+console.log(`Speed: line top speed ${(sim.p.vMain * 3.6).toFixed(0)} km/h; average while moving ${rs.movingKmh.toFixed(1)} km/h; over the whole ride ${rs.rideKmh.toFixed(1)} km/h along the guideway, ${rs.straightRideKmh.toFixed(1)} km/h as the crow flies`);
