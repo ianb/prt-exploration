@@ -336,5 +336,5 @@ const out = {
   stations: fStations,
   uncovered,
 };
-fs.writeFileSync(new URL('../data/network.json', import.meta.url), JSON.stringify(out));
+fs.writeFileSync(new URL('../data/network-grid.json', import.meta.url), JSON.stringify(out));
 console.log(JSON.stringify(stats, null, 2));

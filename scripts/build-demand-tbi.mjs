@@ -207,6 +207,7 @@ console.log('distance decay per km:', beta);
 
 const round = (x) => Math.round(x);
 const out = {
+  stations: net.stations.length, // the network this table was built for
   source: 'Met Council 2023 Travel Behavior Inventory (cleansed), via the Transportation Secure Data Center, National Laboratory of the Rockies (formerly NREL), for DOE; 2020 Census block population; LEHD LODES 2022 jobs by sector.',
   note: 'Average weekday (Tue-Thu) trips with both ends in Minneapolis. Trips between stations under 700 m apart are left out as walks.',
   totals: {

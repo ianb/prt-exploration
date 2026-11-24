@@ -28,6 +28,7 @@ export const DEFAULTS = {
   maxEmptyS: 480, // don't send an empty vehicle from further than this
   keepIdle: 2, // idle vehicles a station keeps before lending them out
   rebalanceS: 20,
+  maxLaunchWait: 8, // s a ready vehicle waits for a gap before launching anyway
   demandData: null, // origin-destination table; null = synthetic placeholder demand
   direction: 'am',
   demandModel: false, // with survey data: true = smoothed model, false = observed table
@@ -130,6 +131,7 @@ export class Sim {
     this.placeFleet();
     this.stats = { diverted: 0, boarded: 0, completed: 0, waitSum: 0, rideSum: 0, waitMax: 0, waveOffs: 0, emptyMoves: 0, minGap: Infinity, collisions: 0, generated: 0 };
     this.nextArrival = this.sampleArrival();
+    this.tripLog = [];
   }
 
   // ---- routing ----------------------------------------------------------
@@ -207,6 +209,9 @@ export class Sim {
   // extra weight downtown and at the University; destinations follow a
   // gravity model.
   buildDemand() {
+    const dd = this.p.demandData;
+    if (dd && dd.stations !== undefined && dd.stations !== this.stations.length)
+      throw new Error(`demand table was built for ${dd.stations} stations but this network has ${this.stations.length}: rebuild it (npm run build:network)`);
     if (this.p.demandData?.model && this.p.demandModel) return this.buildModelDemand(this.p.demandData.model);
     if (this.p.demandData) return this.buildTableDemand(this.p.demandData);
     const hubs = [
@@ -415,8 +420,8 @@ export class Sim {
       let idle = 0;
       for (const v of st.slots) if (v && v.state === 'idle') idle++;
       if (idle <= this.p.keepIdle || st.waiting.length) continue;
-      const crowded = st.berths - st.reserved < 3;
-      if (!crowded && idle <= this.p.keepIdle * 2) continue;
+      // only stations that are filling up lend vehicles out
+      if (st.berths - st.reserved >= 3) continue;
       for (const sid of this.reach[st.id]) {
         const t = this.stations[sid];
         let have = t.inbound + t.waiting.length * -1;
@@ -480,6 +485,10 @@ export class Sim {
           if (v.pax) {
             this.stats.completed++;
             this.stats.rideSum += this.t - v.pax.tBoard;
+            const a = this.stations[v.pax.origin];
+            const b = this.stations[v.pax.dest];
+            // per-trip log: straight-line metres, wait s, ride s (boarding to off the vehicle)
+            this.tripLog.push([Math.hypot(a.x - b.x, a.y - b.y), v.pax.wait, this.t - v.pax.tBoard + this.p.loadTime]);
             v.pax = null;
           }
           v.state = 'idle';
@@ -497,6 +506,7 @@ export class Sim {
         const pax = st.waiting.shift();
         const w = this.t - pax.t0;
         this.stats.waitSum += w;
+        pax.wait = w;
         this.stats.boarded++;
         this.stats.waitMax = Math.max(this.stats.waitMax, w);
         pax.tBoard = this.t + this.p.loadTime;
@@ -615,11 +625,12 @@ export class Sim {
   }
 
   // Can a vehicle waiting in the berth launch now without cutting off main-line traffic?
-  launchClear(v) {
+  launchClear(v, force = false) {
     const st = this.stations[v.dockStation];
     const ex = this.edges[st.exit];
     // room at the start of the exit lane
     if (ex.queue.length && ex.queue[ex.queue.length - 1].pos < this.p.vehicleLength + this.p.minGap + 3) return false;
+    if (force) return true;
     const sm = ex.to;
     const reg = this.mergeReg.get(sm) || [];
     const dist = ex.len;
@@ -628,7 +639,7 @@ export class Sim {
     const tAcc = vm / this.p.accel;
     const dAcc = (vm * vm) / (2 * this.p.accel);
     const tMe = dist <= dAcc ? Math.sqrt((2 * dist) / this.p.accel) : tAcc + (dist - dAcc) / vm;
-    const window = 2.5 * this.p.headway + 1;
+    const window = 2 * this.p.headway + 0.5; // enough room to slot in at one headway either side
     for (const [d, u] of reg) {
       if (this.edges[u.edge].station === st.id) continue;
       const tU = d / Math.max(u.v, 1);
@@ -646,8 +657,12 @@ export class Sim {
       v.blocker = null;
       v.blockerVirtual = false;
       if (v.departing) {
-        // Docked and ready: launch onto the exit lane when there's a slot in the main line.
-        if (!this.launchClear(v)) continue;
+        // Docked and ready: launch onto the exit lane when there's a slot in
+        // the main line. After waiting a while it goes anyway, and main-line
+        // traffic makes room at the merge (a vehicle can't wait forever).
+        v.launchWait = (v.launchWait || 0) + this.p.dt;
+        if (!this.launchClear(v, v.launchWait > this.p.maxLaunchWait)) continue;
+        v.launchWait = 0;
         const st = this.stations[v.dockStation];
         st.slots[v.slot] = null;
         st.reserved--; // the bay is free only once the vehicle has actually left

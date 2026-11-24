@@ -1,6 +1,7 @@
 import { Sim } from '../src/sim.js';
 
-const net = await (await fetch('../data/network.json')).json();
+const netName = new URLSearchParams(location.search).get('net') === 'grid' ? 'network-grid' : 'network';
+const net = await (await fetch(`../data/${netName}.json`)).json();
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 const $ = (id) => document.getElementById(id);
@@ -73,6 +74,7 @@ for (const k of knobs) {
 let sim;
 let lodes = null;
 let tbi = null;
+if (netName === 'network-grid') $('demand').value = 'synthetic'; // demand tables are built for the street network
 async function restart() {
   const opts = Object.fromEntries(knobs.map((k) => [k, Number($(k).value)]));
   const demand = $('demand').value;
@@ -225,7 +227,7 @@ function drawStats() {
     ['Empty trips', s.emptyMoves.toLocaleString()],
     ['Station full, went elsewhere', `${s.waveOffs.toLocaleString()}`],
     ['Closest spacing seen', `${s.minGapM} m`],
-    ['Stations / guideway', `${net.stats.stations} / ${net.stats.guidewayMiles} mi`],
+    ['Station sites / guideway', `${net.stats.stationSites ?? net.stats.stations} / ${net.stats.guidewayMiles} mi`],
   ];
   $('stats').innerHTML = rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('');
 }

@@ -116,6 +116,7 @@ if (fs.existsSync(new URL(`mn_od_aux_JT00_${YEAR}.csv.gz`, RAW))) {
 }
 
 const out = {
+  stations: net.stations.length, // the network this table was built for
   source: `US Census Bureau, LEHD Origin-Destination Employment Statistics (LODES8), Minnesota, ${YEAR}`,
   note: 'Counts are primary+secondary jobs (S000) for workers living and working in Minneapolis, keyed by nearest station. home station -> work station.',
   totals: tot,

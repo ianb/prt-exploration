@@ -1,1 +1,1 @@
-{"name":"prt-exploration","private":true,"type":"module","scripts":{"build:network":"node scripts/build-network.mjs","sim":"node scripts/run-sim.mjs"}}
+{"name":"prt-exploration","private":true,"type":"module","scripts":{"build:network":"node scripts/build-street-network.mjs && node scripts/build-demand.mjs && (test -f data/raw/tbi2023/data/linked_trip.csv && node scripts/build-demand-tbi.mjs || echo \"travel survey not present: skipped demand-tbi\")","build:grid":"node scripts/build-network.mjs","sim":"node scripts/run-sim.mjs"}}
