@@ -1,5 +1,7 @@
 // Headless run: node scripts/run-sim.mjs [minutes] [key=value ...]
 // demand=lodes uses the Census commute table (direction=am|pm|both).
+// demand=tbi uses the travel-survey table (hourFrom=16 hourTo=17 for the 4-5 PM peak);
+// demand=tbi-model uses the smoothed model built from the survey.
 import fs from 'node:fs';
 import { Sim } from '../src/sim.js';
 
@@ -8,6 +10,11 @@ const args = process.argv.slice(2);
 const minutes = Number(args.find((a) => !a.includes('=')) ?? 30);
 const opts = Object.fromEntries(args.filter((a) => a.includes('=')).map((a) => a.split('=')).map(([k, v]) => [k, isNaN(Number(v)) ? v : Number(v)]));
 if (opts.demand === 'lodes') opts.demandData = JSON.parse(fs.readFileSync(new URL('../data/demand-lodes.json', import.meta.url)));
+if (opts.demand === 'tbi-model') {
+  opts.demand = 'tbi';
+  opts.demandModel = true;
+}
+if (opts.demand === 'tbi') opts.demandData = JSON.parse(fs.readFileSync(new URL('../data/demand-tbi.json', import.meta.url)));
 delete opts.demand;
 const t0 = Date.now();
 const sim = new Sim(net, opts);

@@ -64,28 +64,88 @@ For scale: if everyone in the city who commutes within the city did it by
 PRT, the morning peak hour would be roughly 15,000–20,000 trips. A 25–30%
 share is about 5,000.
 
-## Other sources
+## In use: Twin Cities Travel Behavior Inventory 2023 (all trips)
 
-### Twin Cities Travel Behavior Inventory: the best fit for Minneapolis
+The Met Council's household travel survey records every trip, for every
+purpose, with times and modes. It's the standard input to the region's
+travel model. The 2023 round covers about 108,000 trips from 3,749
+households, each with a weight that scales it up to the region's population
+on an average weekday (Tuesday–Thursday).
 
-The Met Council's household travel survey covers every trip, for every
-purpose, with times and modes, recorded by thousands of households.
-It's the standard input to the region's travel model.
-
-- 2023 survey: about 108,000 trips from 3,749 households, through NREL's
-  Transportation Secure Data Center ([2023 TBI](https://www.nlr.gov/transportation/secure-transportation-data/tsdc-cleansed-data/2023-twin-cities-travel-behavior-inventory-household-travel-survey)).
-  The "cleansed" public version is a free download after a one-time registration
-  that accepts their data-use agreement (credit DOE/NLR in anything published).
-  The 2019 and 2021 surveys are on [another page](https://www.nlr.gov/transportation/secure-transportation-data/tsdc-2019-and-2021-twin-cities-travel-behavior-inventory-surveys).
-  Exact locations are in the secure version only.
-- 2019 survey: listed on the [Minnesota Geospatial Commons](https://gisdata.mn.gov/dataset/us-mn-state-metc-society-tbi-home-interview2019),
-  but I couldn't get a direct download from here.
+- Download: [2023 TBI](https://www.nlr.gov/transportation/secure-transportation-data/tsdc-cleansed-data/2023-twin-cities-travel-behavior-inventory-household-travel-survey)
+  from the Transportation Secure Data Center at the National Laboratory of the
+  Rockies (formerly NREL). It's free after a one-time registration that
+  accepts their data-use agreement: credit DOE/NLR in anything published, and
+  keep their notice with every copy of the data. The 2019 and 2021 surveys are
+  on [another page](https://www.nlr.gov/transportation/secure-transportation-data/tsdc-2019-and-2021-twin-cities-travel-behavior-inventory-surveys).
 - Summary report: [TBI 2018–2024](https://metropolitan-council.github.io/TBI_Household_Synthesis_Report).
+- Unpack it into `data/raw/tbi2023/`, run `scripts/fetch-census-pop.sh`, then
+  `node scripts/build-demand-tbi.mjs`. The output, `data/demand-tbi.json`, is
+  kept out of git because it's derived from the survey.
 
-Survey samples are too small to give a station-to-station table on their own.
-Their real use is calibration: how many trips per person per day, the split by
-purpose, time of day, and trip length. Those rates can then be applied to the
-census population and jobs to build a full-day, all-purpose table.
+**Locations.** The public version gives each trip end as a census block
+group, a few city blocks, rather than coordinates. Each end is spread over
+the census blocks inside its block group, weighted by what's there for that
+trip's purpose:
+
+- Home ends go by 2020 Census population.
+- Work ends go by all jobs.
+- Shopping goes by retail jobs, meals by restaurant and hotel jobs, school by
+  education jobs, and errands by retail, health care and other services.
+- Social and recreation trips go by arts, recreation and food jobs plus
+  population.
+
+Job sectors come from LODES. Each block maps to its nearest station.
+
+**What it says about Minneapolis**, on an average weekday:
+
+| | |
+|---|---|
+| Trips with both ends in the city | 1,130,000 |
+| …of which between stations at least 700 m apart (PRT-length) | 803,000 (71%) |
+| …the rest (short enough to walk) | 328,000 |
+| PRT-length trips now made by car | 525,000 |
+| …on foot / bike or scooter / transit / ride-hail | 154,000 / 48,000 / 41,000 / 10,000 |
+| Busiest hour (4–5 PM), PRT-length trips | 75,000 |
+| Trips crossing the city line (not modelled yet) | ~1,020,000 |
+
+Destination purposes for PRT-length trips: home 33%, social and recreation
+11%, escorting someone 11%, shopping 10%, work 8%, work-related 7%, meals 6%.
+Work is a small slice. Midday and evening trips are as important as the
+commute.
+
+**Sample size.** The survey has about 5,400 weighted trips inside
+Minneapolis, and only 508 between 4 and 5 PM. Used directly as a
+station-to-station table, one hour is mostly sampling noise: it made half of
+all trips look one-way and doubled the empty-vehicle moves. So the simulator
+uses a **smoothed model** built from the survey:
+
+- **How many trips** of each purpose pair (origin purpose → destination
+  purpose) leave in each hour: from the survey.
+- **Where they start and end:** station attraction for each purpose, from the
+  block weights above.
+- **How far they go:** a distance falloff for each destination purpose,
+  tuned so average trip length matches the survey. That's 3.5 km for work,
+  2.9 km for home, 2.6 km for shopping and social trips, and 2.2 km for
+  school.
+
+The observed table is still available (`demand=tbi`) for comparison.
+
+**Simulation, 4–5 PM, smoothed model:**
+
+| Headway | Trips/hour | Share of peak PRT-length trips | Result |
+|---|---|---|---|
+| 0.5 s | 7,500 | 10% | Works, strained: 57 s average wait, a few stations starved |
+| 1.0 s | 7,500 | 10% | Failing: 1,400 waiting by the end of the hour |
+| 0.5 s | 12,000 | 16% | Gridlock |
+| 0.5 s | 18,000 | 24% | Gridlock, and the merge controller produces collisions |
+
+So with today's controller, the half-mile network can carry about a tenth
+of the city's peak-hour trips. That's roughly 14% of the car trips. Reaching
+a quarter or more needs the slot-based merge control, a denser downtown, or
+both.
+
+## Other sources
 
 ### Chicago ride-hail trips: the best observed all-purpose data
 
@@ -113,11 +173,10 @@ quarter-mile station grid.
 
 ## Recommendation
 
-Stay in Minneapolis. LODES already gives a real commute pattern at the
-census-block level. The next step is to fill in the other four-fifths of trips
-with a standard trip-generation model: population and jobs from census data,
-with rates from the TBI summary report. Pulling the cleansed TBI download
-would let us check those rates properly.
+Stay in Minneapolis. The travel survey plus census blocks gives a credible
+all-purpose, hour-by-hour demand, and LODES adds a full-count commute
+pattern to check it against. Trips that cross the city line (about as many as
+the trips inside it) are the next gap to fill.
 
 If we want to test PRT against observed trips rather than modelled ones,
 Chicago's ride-hail data is the strongest public option. A single-city

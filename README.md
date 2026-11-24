@@ -25,9 +25,13 @@ npm run build:network
 # Census commute data (LODES): download, then build the station-to-station table
 ./scripts/fetch-lodes.sh && node scripts/build-demand.mjs
 
+# Travel survey (TBI 2023): unpack the TSDC download into data/raw/tbi2023 first
+./scripts/fetch-census-pop.sh && node scripts/build-demand-tbi.mjs
+
 # Headless simulation: minutes, then any parameter from src/sim.js DEFAULTS
 node scripts/run-sim.mjs 60 tripsPerHour=9000 headway=0.5 fleetPerStation=7 berths=13
 node scripts/run-sim.mjs 60 demand=lodes direction=am tripsPerHour=5000 headway=0.5 fleetPerStation=6 berths=14
+node scripts/run-sim.mjs 60 demand=tbi-model hourFrom=16 hourTo=17 tripsPerHour=7500 headway=0.5 fleetPerStation=6 berths=14
 ```
 
 To watch it, serve the repository root with any static server, for example
@@ -46,3 +50,5 @@ lets you change demand, headway, fleet size and berths.
 - `data/network.json`: the generated network
 - `data/demand-lodes.json`: Census LODES 2022 commutes, by home and work
   station (public domain)
+- `data/demand-tbi.json`: built locally from the travel survey, not
+  committed (see docs/data-sources.md)

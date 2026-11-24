@@ -30,6 +30,9 @@ export const DEFAULTS = {
   rebalanceS: 20,
   demandData: null, // origin-destination table; null = synthetic placeholder demand
   direction: 'am',
+  demandModel: false, // with survey data: true = smoothed model, false = observed table
+  hourFrom: 0, // for hourly tables: departures in [hourFrom, hourTo)
+  hourTo: 24,
   berths: 0, // override berths per station (0 = use the network's)
   seed: 1,
 };
@@ -204,6 +207,7 @@ export class Sim {
   // extra weight downtown and at the University; destinations follow a
   // gravity model.
   buildDemand() {
+    if (this.p.demandData?.model && this.p.demandModel) return this.buildModelDemand(this.p.demandData.model);
     if (this.p.demandData) return this.buildTableDemand(this.p.demandData);
     const hubs = [
       { x: 360, y: 3220, w: 12, r: 1200 }, // downtown
@@ -228,13 +232,21 @@ export class Sim {
     });
   }
 
-  // Demand from an origin-destination table (e.g. LODES commutes):
-  // od = [[home station, work station, count], ...]. 'am' runs home -> work,
-  // 'pm' work -> home, 'both' mixes the two.
+  // Demand from an origin-destination table. Two shapes:
+  //  - commutes (LODES): [home station, work station, count]. 'am' runs
+  //    home -> work, 'pm' work -> home, 'both' mixes the two.
+  //  - trips by hour (TBI survey): [origin, destination, depart hour, trips],
+  //    filtered to hours [hourFrom, hourTo).
   buildTableDemand(data) {
     const S = this.stations.length;
     const rowsByOrigin = Array.from({ length: S }, () => []);
-    for (const [h, w, n] of data.od) {
+    for (const row of data.od) {
+      if (row.length === 4) {
+        const [o, d, h, n] = row;
+        if (h >= this.p.hourFrom && h < this.p.hourTo) rowsByOrigin[o].push([d, n]);
+        continue;
+      }
+      const [h, w, n] = row;
       if (this.p.direction !== 'pm') rowsByOrigin[h].push([w, n]);
       if (this.p.direction !== 'am') rowsByOrigin[w].push([h, n]);
     }
@@ -253,6 +265,53 @@ export class Sim {
       }
       return { ids, cdf: cdf.map((x) => x / (tot[o] || 1)) };
     });
+  }
+
+  // Smoothed survey model: pick a trip type (origin purpose, destination
+  // purpose) in proportion to the survey's trips in the chosen hours, an origin
+  // station by attraction for that purpose, and a destination by attraction
+  // times exp(-beta * km).
+  buildModelDemand(m) {
+    this.model = m;
+    const cls = [];
+    let acc = 0;
+    for (const [h, op, dp, n] of m.trips) {
+      if (h < this.p.hourFrom || h >= this.p.hourTo) continue;
+      cls.push([op, dp]);
+      this.classCdfRaw = this.classCdfRaw || [];
+      this.classCdfRaw.push((acc += n));
+    }
+    this.classes = cls;
+    this.classCdf = this.classCdfRaw.map((x) => x / acc);
+    this.attrCdf = m.attraction ? Object.fromEntries(m.purposes.map((p) => [p, this.cdfOf(m.attraction[p])])) : {};
+    this.destCache = new Map();
+  }
+
+  cdfOf(w) {
+    let a = 0;
+    const c = w.map((x) => (a += x));
+    return c.map((x) => x / (a || 1));
+  }
+
+  modelTrip() {
+    const m = this.model;
+    const [op, dp] = this.classes[this.pick(this.classCdf)];
+    const o = this.pick(this.attrCdf[m.purposes[op]]);
+    const key = dp * this.stations.length + o;
+    let cdf = this.destCache.get(key);
+    if (!cdf) {
+      const a = this.stations[o];
+      const A = m.attraction[m.purposes[dp]];
+      const beta = m.beta[m.purposes[dp]];
+      cdf = this.cdfOf(
+        this.stations.map((b, j) => {
+          const d = Math.hypot(a.x - b.x, a.y - b.y);
+          return d < m.minTripMeters ? 0 : A[j] * Math.exp((-beta * d) / 1000);
+        })
+      );
+      this.destCache.set(key, cdf);
+    }
+    return [o, this.pick(cdf)];
   }
 
   pickDest(o) {
@@ -321,8 +380,13 @@ export class Sim {
   }
 
   newPassenger() {
-    const o = this.pick(this.originCdf);
-    const d = this.pickDest(o);
+    let o;
+    let d;
+    if (this.model) [o, d] = this.modelTrip();
+    else {
+      o = this.pick(this.originCdf);
+      d = this.pickDest(o);
+    }
     if (o === d) return;
     this.stats.generated++;
     const st = this.stations[o];

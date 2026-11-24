@@ -67,6 +67,7 @@ for (const k of knobs) {
 }
 let sim;
 let lodes = null;
+let tbi = null;
 async function restart() {
   const opts = Object.fromEntries(knobs.map((k) => [k, Number($(k).value)]));
   const demand = $('demand').value;
@@ -74,6 +75,18 @@ async function restart() {
     lodes ??= await (await fetch('../data/demand-lodes.json')).json();
     opts.demandData = lodes;
     opts.direction = demand.endsWith('pm') ? 'pm' : 'am';
+  }
+  if (demand.startsWith('tbi')) {
+    try {
+      tbi ??= await (await fetch('../data/demand-tbi.json')).json();
+      opts.demandData = tbi;
+      opts.demandModel = true;
+      if (demand === 'tbi-pm') Object.assign(opts, { hourFrom: 16, hourTo: 17 });
+    } catch {
+      alert('data/demand-tbi.json is missing. It is built locally from the travel survey: see docs/data-sources.md. Using commute data instead.');
+      $('demand').value = 'lodes-am';
+      return restart();
+    }
   }
   sim = new Sim(net, opts);
 }
