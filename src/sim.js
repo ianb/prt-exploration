@@ -55,6 +55,9 @@ export const DEFAULTS = {
   rebalanceS: 30,
   forecastS: 600, // s ahead that predictive rebalancing plans for
   placeByDemand: true, // start the fleet where the first trips will be
+  rebalanceMaxPerStation: 3, // empties sent to one station per rebalancing round
+  // Event surge (e.g. a stadium letting out). null = none. See setupEvent().
+  event: null,
   maxLaunchWait: 8, // s a ready vehicle waits for a gap before launching anyway
   demandData: null, // origin-destination table; null = synthetic placeholder demand
   direction: 'am',
@@ -168,6 +171,7 @@ export class Sim {
     this.buildDemand();
     if (!this.hours) this.originShare = this.originCdf ? this.originCdf.map((c, i) => c - (i ? this.originCdf[i - 1] : 0)) : null;
     this.vehicles = [];
+    if (this.p.event) this.setupEvent(this.p.event);
     this.placeFleet();
     this.stats = { diverted: 0, boarded: 0, completed: 0, waitSum: 0, rideSum: 0, waitMax: 0, waveOffs: 0, emptyMoves: 0, minGap: Infinity, collisions: 0, generated: 0 };
     this.nextArrival = this.sampleArrival();
@@ -365,6 +369,17 @@ export class Sim {
 
   // Expected trips starting at station o between t0 and t1 (from the demand model).
   expectedDepartures(o, t0, t1) {
+    return this.baseDepartures(o, t0, t1) + this.eventDepartures(o, t0, t1);
+  }
+
+  eventDepartures(o, t0, t1) {
+    const ev = this.event;
+    if (!ev || !ev.share[o]) return 0;
+    const overlap = Math.max(0, Math.min(t1, ev.end) - Math.max(t0, ev.start));
+    return (ev.parties / (ev.end - ev.start)) * overlap * ev.share[o];
+  }
+
+  baseDepartures(o, t0, t1) {
     const lam = this.p.tripsPerHour / 3600;
     if (!this.hours) return lam * (t1 - t0) * this.originShare[o];
     let tot = 0;
@@ -484,6 +499,7 @@ export class Sim {
       if (this.rand() < this.rateFactor(this.nextArrival)) this.newPassenger();
       this.nextArrival = this.sampleArrival(this.nextArrival);
     }
+    if (this.event) this.eventStep();
     if (Math.floor(this.t / this.p.rebalanceS) !== Math.floor((this.t - dt) / this.p.rebalanceS)) this.rebalance();
     this.lookAhead();
     this.stationLogic();
@@ -505,6 +521,80 @@ export class Sim {
     // Call an empty vehicle if the station can't cover its queue, counting
     // vehicles already docked and loaded vehicles about to arrive.
     if (st.waiting.length > this.supply(st)) this.callEmpty(st);
+  }
+
+  // ---- event surge ------------------------------------------------------------
+  // ev = { at: [x, y], start, duration (s), parties (vehicle loads), radius (m,
+  //        stations fans may walk to), berths (bays at those stations),
+  //        queueSecPerParty (how long fans expect each party ahead to take),
+  //        groups: [{ name, share, weights: per-station destination weights }] }
+  // Fans leave the venue at a steady rate over the window, pick the station
+  // with the best walk + visible queue, and walk there.
+  setupEvent(ev) {
+    const S = this.stations.length;
+    const near = this.stations
+      .map((st) => ({ st, walk: (Math.hypot(st.x - ev.at[0], st.y - ev.at[1]) * 1.25) / 1.3 }))
+      .filter((x) => x.walk * 1.04 <= (ev.radius * 1.25) / 1.3);
+    if (ev.berths) for (const x of near) x.st.berths = Math.max(x.st.berths, ev.berths);
+    const share = new Float64Array(S);
+    let tot = 0;
+    for (const x of near) tot += Math.exp(-x.walk / 240);
+    for (const x of near) share[x.st.id] = Math.exp(-x.walk / 240) / tot;
+    const groups = ev.groups.map((g) => ({ ...g, cdf: this.cdfOf(Array.from(g.weights)) }));
+    const gcdf = this.cdfOf(groups.map((g) => g.share));
+    // staging ring: stations a short hop away keep themselves stocked with empties
+    // during the event, so the venue's stations refill in minutes, not from across town
+    const nearIds = new Set(near.map((x) => x.st.id));
+    const staging = new Set(
+      this.stations.filter((st) => !nearIds.has(st.id) && Math.hypot(st.x - ev.at[0], st.y - ev.at[1]) <= (ev.stagingRadius ?? 0)).map((st) => st.id)
+    );
+    this.event = { ...ev, end: ev.start + ev.duration, near, share, groups, gcdf, next: ev.start, pending: [], headed: {}, staging, maxPerStation: ev.maxPerStation ?? 12 };
+    this.eventLog = [];
+    this.eventLeft = 0;
+  }
+
+  eventStep() {
+    const ev = this.event;
+    const rate = ev.parties / ev.duration;
+    while (ev.next <= this.t && ev.next < ev.end) {
+      // pick the station with the best walk + expected queue. Fans (or a
+      // stadium app) see everyone already waiting or walking there, and the
+      // vehicles already there or on the way.
+      let best = null;
+      let bc = Infinity;
+      for (const x of ev.near) {
+        let idle = 0;
+        for (const v of x.st.slots) if (v && v.state === 'idle') idle++;
+        const ahead = x.st.waiting.length + (ev.headed[x.st.id] || 0) - idle - x.st.inbound;
+        const c = x.walk + Math.max(0, ahead) * ev.queueSecPerParty;
+        if (c < bc) {
+          bc = c;
+          best = x;
+        }
+      }
+      ev.headed[best.st.id] = (ev.headed[best.st.id] || 0) + 1;
+      const g = ev.groups[this.pick(ev.gcdf)];
+      let d = this.pick(g.cdf);
+      if (d === best.st.id) d = this.nearbyGeo[d][0];
+      ev.pending.push({ at: ev.next + best.walk, origin: best.st.id, dest: d, walk: best.walk, left: ev.next, group: g.name });
+      this.eventLeft++;
+      ev.next += -Math.log(1 - this.rand()) / rate;
+    }
+    if (ev.pending.length) {
+      const still = [];
+      for (const q of ev.pending) {
+        if (q.at > this.t) {
+          still.push(q);
+          continue;
+        }
+        const st = this.stations[q.origin];
+        ev.headed[q.origin]--;
+        st.waiting.push({ origin: q.origin, dest: q.dest, t0: q.at, event: true, walk: q.walk, left: q.left, group: q.group });
+        this.stats.generated++;
+        if (st.waiting.length > this.supply(st)) this.callEmpty(st);
+      }
+      ev.pending = still;
+    }
   }
 
   supply(st) {
@@ -542,13 +632,17 @@ export class Sim {
     const bal = new Float64Array(S);
     for (const st of this.stations) {
       for (const v of st.slots) if (v && v.state === 'idle') idle[st.id]++;
-      const need = this.expectedDepartures(st.id, this.t, this.t + W) + st.waiting.length;
+      let need = this.expectedDepartures(st.id, this.t, this.t + W) + st.waiting.length;
+      // during an event, venue and staging stations want to be full of empties
+      const ev = this.event;
+      if (ev && this.t > ev.start - ev.prepS && this.t < ev.end + 1800 && (ev.share[st.id] || ev.staging.has(st.id))) need = Math.max(need, st.berths - 2);
       bal[st.id] = idle[st.id] + st.inbound + soon[st.id] - need;
     }
     const deficits = this.stations.filter((st) => bal[st.id] < -0.5).sort((a, b) => bal[a.id] - bal[b.id]);
     let moves = 0;
     for (const d of deficits) {
-      let k = Math.min(3, Math.ceil(-bal[d.id]));
+      const evSt = this.event && (this.event.share[d.id] || this.event.staging.has(d.id));
+      let k = Math.min(evSt ? this.event.maxPerStation : this.p.rebalanceMaxPerStation, Math.ceil(-bal[d.id]));
       for (const sid of this.nearby[d.id]) {
         if (k <= 0 || d.reserved + d.inbound >= d.berths) break;
         if (this.stationTime(sid, d.id) > 1.5 * W) break;
@@ -573,6 +667,9 @@ export class Sim {
   }
 
   callEmpty(st) {
+    // never send more vehicles than the station has free bays for: a surplus
+    // can only circle, and enough circling jams the network
+    if (st.reserved + st.inbound >= st.berths) return false;
     for (const sid of this.nearby[st.id]) {
       if (this.stationTime(sid, st.id) > this.p.maxEmptyS) break;
       const src = this.stations[sid];
@@ -595,6 +692,8 @@ export class Sim {
   }
 
   dispatch(v, target, state) {
+    v.dispatchedAt = this.t;
+    v.dispatchedFrom = v.dockStation;
     v.target = target;
     v.state = state;
     v.station = -1;
@@ -612,6 +711,8 @@ export class Sim {
         if (e.kind === 'berth' && v.v < 0.05 && e.queue[0] === v && e.len - v.pos < 2 && st.slots.includes(null)) {
           e.queue.shift();
           this.dock(v, st);
+          st.docks = (st.docks || 0) + 1;
+          if (this.onDock) this.onDock(v, st);
           v.state = 'unloading';
           v.timer = v.pax ? this.p.unloadTime : 0;
         }
@@ -619,6 +720,7 @@ export class Sim {
         v.timer -= dt;
         if (v.timer <= 0) {
           if (v.pax) {
+            if (v.pax.event) this.eventLog.push({ left: v.pax.left, walk: v.pax.walk, wait: v.pax.wait, ride: this.t - v.pax.tBoard + this.p.loadTime, origin: v.pax.origin, dest: v.pax.dest, group: v.pax.group });
             this.stats.completed++;
             this.stats.rideSum += this.t - v.pax.tBoard;
             const a = this.stations[v.pax.origin];
@@ -936,6 +1038,7 @@ export class Sim {
         v.launchWait = 0;
         const st = this.stations[v.dockStation];
         st.slots[v.slot] = null;
+        st.launches = (st.launches || 0) + 1;
         st.reserved--; // the bay is free only once the vehicle has actually left
         v.docked = false;
         v.departing = false;
