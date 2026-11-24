@@ -2,16 +2,16 @@
 // Hennepin County's public GIS service. These are the candidate rights-of-way
 // for an elevated guideway. Output: data/raw/streets.json (GeoJSON-ish).
 //
-// Freeways, ramps, alleys and private roads are left out.
+// Ramps, alleys and private roads are left out.
 
 import fs from 'node:fs';
 
 const URL_ = 'https://gis.hennepin.us/arcgis/rest/services/HennepinData/TRANSPORTATION/MapServer/0/query';
-// All public streets except freeways, ramps, alleys, private and non-traffic ways.
+// All public streets and freeways except ramps, HOV lanes, alleys, private and non-traffic ways.
 // Local streets are included: an elevated guideway over a street like 32nd St
 // is plausible. The network builder keeps only long, continuous ones.
 const where =
-  "(CTU_NAME_L='Minneapolis' OR CTU_NAME_R='Minneapolis') AND (FUNCTIONAL IS NULL OR FUNCTIONAL NOT IN ('1100','2100')) AND ROUTE_SYS NOT IN ('01','02','22','21','30','34','70')";
+  "(CTU_NAME_L='Minneapolis' OR CTU_NAME_R='Minneapolis') AND ROUTE_SYS NOT IN ('22','21','30','34','41','42','43','70')";
 const fields = 'OBJECTID,ST_CONCAT,FUNCTIONAL,ROUTE_SYS,ONEWAY,ELEV_FROM,ELEV_TO,SPEEDLIMIT';
 
 const out = [];

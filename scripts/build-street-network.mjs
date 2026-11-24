@@ -35,7 +35,10 @@ const P = {
   sameStreetBonus: 1.4,
   pieceKm: 1.6, // corridors are chosen about a mile of one street at a time
   pieceOverheadKm: 0.4, // each new piece adds junctions and ramps: count it as this much extra guideway
-  twinCost: 1.6, // twin beams on shared columns cost this much more than one beam
+  freewayCost: 1.3, // freeway rights-of-way: possible, but poor walk access
+  crossingKm: 0.6, // a four-way crossing (two levels, two turn ramps) counts as this much extra guideway
+  teeKm: 0.15, // a three-way junction (one merge or split)
+  bridgeCloseMax: 3000, // m, longest connection added so a line has a way back
   localCost: 1.15, // local streets: a little more disruptive than arterials
   localMinKm: 2.5, // local streets must run at least this far to be candidates
   loopCloseMax: 3000, // m, longest connection added to close a dead end into a loop
@@ -159,13 +162,13 @@ for (const s of streets) {
 }
 for (const s of streets) {
   if (/Parkway|Pkwy|Victory Memorial/i.test(s.ST_CONCAT || '')) continue;
-  if (s.ROUTE_SYS === '41') continue;
-  const local = !s.FUNCTIONAL;
+  const freeway = ['1100', '2100'].includes(s.FUNCTIONAL) || s.ROUTE_SYS === '01';
+  const local = !s.FUNCTIONAL && !freeway;
   if (local && (nameLen.get(norm(s.ST_CONCAT)) || 0) < P.localMinKm * 1000) continue;
   for (const path of s.paths) {
     const pts = path.map(project);
     if (pts.length < 2) continue;
-    const seg = { id: segs.length, name: norm(s.ST_CONCAT), local, pts, oneway: s.ONEWAY === 'F' || s.ONEWAY === 'T' ? s.ONEWAY : 'B' };
+    const seg = { id: segs.length, name: norm(s.ST_CONCAT), local, freeway, pts, oneway: s.ONEWAY === 'F' || s.ONEWAY === 'T' ? s.ONEWAY : 'B' };
     seg.a = gnode(pts[0]);
     seg.b = gnode(pts[pts.length - 1]);
     if (seg.a === seg.b) continue;
@@ -214,7 +217,7 @@ for (const s of segs) {
   const b = lastE[1] ? lastE[0].b : lastE[0].a;
   if (a === b) continue;
   const len = polylineLength(pts);
-  links.push({ id: links.length, name: s.name, pts, len, oneway: ow, a, b, local: chain.every(([sg]) => sg.local) });
+  links.push({ id: links.length, name: s.name, pts, len, oneway: ow, a, b, local: chain.every(([sg]) => sg.local), freeway: chain.some(([sg]) => sg.freeway) });
 }
 for (const n of gnodes.values()) n.links = [];
 for (const l of links) {
@@ -229,7 +232,7 @@ console.log(`candidate links: ${links.length}, ${Math.round(links.reduce((a, l) 
 const covered = new Uint8Array(blocks.length);
 let coveredW = 0;
 const selected = new Set();
-const cost = (l) => (l.len / 1000) * (l.oneway === 'B' ? P.twinCost : 1) * (l.local ? P.localCost : 1);
+const cost = (l) => (l.len / 1000) * (l.local ? P.localCost : 1) * (l.freeway ? P.freewayCost : 1);
 const gainOf = (l) => l.cover.reduce((a, i) => a + (covered[i] ? 0 : blocks[i].w), 0);
 function select(l) {
   selected.add(l);
@@ -318,7 +321,16 @@ for (;;) {
         break;
       }
     if (!touches) continue;
-    let sc = pieceGain(pc) / pc.cost;
+    // junctions this piece would create: crossings cost more than tees
+    let jk = 0;
+    for (const n of pc.nodes) {
+      const sd = selDegree(n);
+      if (!sd) continue;
+      const pd = pc.links.filter((l) => l.a === n || l.b === n).length;
+      if (sd + pd >= 4) jk += P.crossingKm;
+      else if (sd + pd === 3) jk += P.teeKm;
+    }
+    let sc = pieceGain(pc) / (pc.cost + jk);
     if ([...pc.nodes].some((n) => n.links.some((m) => selected.has(m) && m.name === pc.name))) sc *= P.sameStreetBonus;
     if (sc > bs) {
       bs = sc;
@@ -356,7 +368,7 @@ for (let pass = 0; pass < 4; pass++) {
       for (const l of n.links) {
         if (l === own || selected.has(l)) continue;
         const m = l.a === n ? l.b : l.a;
-        const nd = d + l.len * (l.local ? P.localCost : 1) + (via && via.name !== l.name ? P.turnPenalty : 0);
+        const nd = d + cost(l) * 1000 + (via && via.name !== l.name ? P.turnPenalty : 0);
         if (nd > P.loopCloseMax) continue;
         if (nd < (dmap.get(m) ?? Infinity)) {
           dmap.set(m, nd);
@@ -441,7 +453,7 @@ for (let changed = true; changed; ) {
       for (const l of n.links) {
         if (onlySelected && !selected.has(l)) continue;
         const m = l.a === n ? l.b : l.a;
-        const nd = dn + (onlySelected ? l.len : l.len * (l.local ? P.localCost : 1));
+        const nd = dn + (onlySelected ? l.len : cost(l) * 1000);
         if (nd < (d.get(m) ?? Infinity)) {
           d.set(m, nd);
           prev.set(m, l);
@@ -495,6 +507,121 @@ for (let changed = true; changed; ) {
   console.log(`shortcuts added: ${Math.round(added / 100) / 10} km`);
 }
 
+// Every line is one-way, so every piece of guideway needs a way back: the
+// network must have no "bridges" in the graph sense (a link whose removal
+// cuts the network in two). For each one, connect the cut-off side back by
+// the shortest street route; if there is none within reach, drop that side.
+{
+  function findBridges() {
+    const nodes = [...selNodes()];
+    const idx = new Map(nodes.map((n, i) => [n, i]));
+    const adj = nodes.map(() => []);
+    for (const l of selected) {
+      adj[idx.get(l.a)].push([idx.get(l.b), l]);
+      adj[idx.get(l.b)].push([idx.get(l.a), l]);
+    }
+    const disc = new Array(nodes.length).fill(-1);
+    const low = new Array(nodes.length).fill(0);
+    const out = [];
+    let t = 0;
+    for (let s0 = 0; s0 < nodes.length; s0++) {
+      if (disc[s0] !== -1) continue;
+      const stack = [[s0, null, 0]];
+      disc[s0] = low[s0] = t++;
+      while (stack.length) {
+        const top = stack[stack.length - 1];
+        const [v, pl] = top;
+        if (top[2] < adj[v].length) {
+          const [w, l] = adj[v][top[2]++];
+          if (l === pl) continue;
+          if (disc[w] === -1) {
+            disc[w] = low[w] = t++;
+            stack.push([w, l, 0]);
+          } else low[v] = Math.min(low[v], disc[w]);
+        } else {
+          stack.pop();
+          if (stack.length) {
+            const u = stack[stack.length - 1][0];
+            low[u] = Math.min(low[u], low[v]);
+            if (low[v] > disc[u]) out.push(pl);
+          }
+        }
+      }
+    }
+    return out;
+  }
+  function sideOf(start, without) {
+    const seen = new Set([start]);
+    const q = [start];
+    while (q.length) {
+      const n = q.pop();
+      for (const l of n.links) {
+        if (l === without || !selected.has(l)) continue;
+        const m = l.a === n ? l.b : l.a;
+        if (!seen.has(m)) {
+          seen.add(m);
+          q.push(m);
+        }
+      }
+    }
+    return seen;
+  }
+  let joined = 0;
+  let droppedKm = 0;
+  for (let iter = 0; iter < 400; iter++) {
+    const br = findBridges();
+    if (!br.length) break;
+    const b = br[0];
+    const A = sideOf(b.a, b);
+    const B = sideOf(b.b, b);
+    const [small, big] = A.size <= B.size ? [A, B] : [B, A];
+    // multi-source search from the small side to the big side over unselected streets
+    const dmap = new Map();
+    const prev = new Map();
+    const h = [];
+    for (const n of small) {
+      dmap.set(n, 0);
+      h.push([0, n]);
+    }
+    let hit = null;
+    while (h.length) {
+      h.sort((x, y) => y[0] - x[0]);
+      const [d, n] = h.pop();
+      if (d > dmap.get(n)) continue;
+      if (big.has(n)) {
+        hit = n;
+        break;
+      }
+      for (const l of n.links) {
+        if (selected.has(l)) continue;
+        const m = l.a === n ? l.b : l.a;
+        const nd = d + cost(l) * 1000;
+        if (nd > P.bridgeCloseMax || small.has(m)) continue;
+        if (nd < (dmap.get(m) ?? Infinity)) {
+          dmap.set(m, nd);
+          prev.set(m, l);
+          h.push([nd, m]);
+        }
+      }
+    }
+    if (hit) {
+      for (let n = hit; !small.has(n); ) {
+        const l = prev.get(n);
+        select(l);
+        n = l.a === n ? l.b : l.a;
+      }
+      joined++;
+    } else {
+      for (const l of [...selected])
+        if (l === b || (small.has(l.a) && small.has(l.b))) {
+          selected.delete(l);
+          droppedKm += l.len / 1000;
+        }
+    }
+  }
+  console.log(`one-way loops: ${joined} connections added, ${droppedKm.toFixed(1)} km dropped`);
+}
+
 // Merge selected links into runs between real junctions (where 3+ selected
 // pieces meet) or line ends, so a run is one continuous piece of guideway.
 {
@@ -533,7 +660,7 @@ for (let changed = true; changed; ) {
     const last = chain[chain.length - 1];
     const b = last[1] ? last[0].b : last[0].a;
     const names = [...new Set(chain.map(([l]) => l.name))];
-    runs.push({ id: runs.length, name: names.join(' / '), pts, len: polylineLength(pts), oneway: a === b ? 'B' : ow, a, b, bridge: chain.some(([l]) => l.bridge) });
+    runs.push({ id: runs.length, name: names.join(' / '), pts, len: polylineLength(pts), oneway: a === b ? 'B' : ow, a, b, bridge: chain.some(([l]) => l.bridge), freeway: chain.some(([l]) => l.freeway) });
   }
   // replace selection by runs; node.links must point at runs now
   for (const n of gnodes.values()) n.links = n.links.filter((l) => !selected.has(l));
@@ -547,88 +674,132 @@ for (let changed = true; changed; ) {
   console.log(`runs between junctions: ${selected.size}`);
 }
 
-// ---- 3. directions: beams ---------------------------------------------------------
-// A beam is one direction of guideway along a selected link.
+// ---- 3. directions -----------------------------------------------------------------
+// Every run gets one direction. Start from a strong orientation (every
+// junction can reach every other), then flip runs one at a time whenever that
+// shortens demand-weighted travel and keeps everything reachable.
 let beams;
-function makeBeams() {
-  beams = [];
-  for (const l of selected) {
-    const fwd = { link: l, from: l.a, to: l.b, pts: l.pts };
-    const rev = { link: l, from: l.b, to: l.a, pts: [...l.pts].reverse() };
-    if (l.oneway === 'F') beams.push(fwd);
-    else if (l.oneway === 'T') beams.push(rev);
-    else {
-      fwd.twin = rev;
-      rev.twin = fwd;
-      beams.push(fwd, rev);
-    }
-  }
-}
-// Strongly connected component on junction level.
-function sccOf() {
-  const nodes = [...selNodes()];
-  const idx = new Map(nodes.map((n, i) => [n, i]));
-  const out = nodes.map(() => []);
-  for (const b of beams) out[idx.get(b.from)].push(idx.get(b.to));
-  // dead-end turnarounds
-  for (const n of nodes) if (selDegree(n) === 1) out[idx.get(n)].push(idx.get(n));
-  const index = new Array(nodes.length).fill(-1);
-  const low = new Array(nodes.length).fill(0);
-  const on = new Array(nodes.length).fill(false);
-  const st = [];
-  const comp = new Array(nodes.length).fill(-1);
-  let ix = 0;
-  let nc = 0;
-  for (let s = 0; s < nodes.length; s++) {
-    if (index[s] !== -1) continue;
-    const work = [[s, 0]];
-    index[s] = low[s] = ix++;
-    st.push(s);
-    on[s] = true;
-    while (work.length) {
-      const top = work[work.length - 1];
-      const v = top[0];
-      if (top[1] < out[v].length) {
-        const w = out[v][top[1]++];
-        if (index[w] === -1) {
-          index[w] = low[w] = ix++;
-          st.push(w);
-          on[w] = true;
-          work.push([w, 0]);
-        } else if (on[w]) low[v] = Math.min(low[v], index[w]);
-      } else {
-        work.pop();
-        if (work.length) low[work[work.length - 1][0]] = Math.min(low[work[work.length - 1][0]], low[v]);
-        if (low[v] === index[v]) {
-          let w;
-          do {
-            w = st.pop();
-            on[w] = false;
-            comp[w] = nc;
-          } while (w !== v);
-          nc++;
-        }
+{
+  const runs = [...selected];
+  const jn = [...selNodes()];
+  const ji = new Map(jn.map((n, i) => [n, i]));
+  const ends = runs.map((r) => [ji.get(r.a), ji.get(r.b)]);
+  // initial strong orientation by DFS: tree edges away from the root, others back up
+  const dir = new Int8Array(runs.length); // 1 = a->b, -1 = b->a
+  {
+    const adj = jn.map(() => []);
+    runs.forEach((r, k) => {
+      adj[ends[k][0]].push([ends[k][1], k]);
+      adj[ends[k][1]].push([ends[k][0], k]);
+    });
+    const disc = new Array(jn.length).fill(-1);
+    const used = new Uint8Array(runs.length);
+    let t = 0;
+    for (let s0 = 0; s0 < jn.length; s0++) {
+      if (disc[s0] !== -1) continue;
+      disc[s0] = t++;
+      const stack = [[s0, 0]];
+      while (stack.length) {
+        const top = stack[stack.length - 1];
+        const v = top[0];
+        if (top[1] < adj[v].length) {
+          const [w, k] = adj[v][top[1]++];
+          if (used[k]) continue;
+          used[k] = 1;
+          dir[k] = ends[k][0] === v ? 1 : -1; // orient v -> w
+          if (disc[w] === -1) {
+            disc[w] = t++;
+            stack.push([w, 0]);
+          }
+        } else stack.pop();
       }
     }
   }
-  const sizes = new Array(nc).fill(0);
-  comp.forEach((c) => sizes[c]++);
-  const big = sizes.indexOf(Math.max(...sizes));
-  return new Map(nodes.map((n, i) => [n, comp[i] === big]));
-}
-let upgraded = 0;
-for (let pass = 0; pass < 20; pass++) {
-  makeBeams();
-  const inBig = sccOf();
-  const bad = [...selected].filter((l) => l.oneway !== 'B' && (!inBig.get(l.a) || !inBig.get(l.b)));
-  if (!bad.length) break;
-  for (const l of bad) {
-    l.oneway = 'B';
-    upgraded++;
+  const wN = jn.map((n) => blocksNear([n.p], 500).reduce((a, i) => a + blocks[i].w, 0) + 1);
+  let rnd = 777;
+  const rand = () => ((rnd = (rnd * 1103515245 + 12345) % 2147483648) / 2147483648);
+  const totW = wN.reduce((a, b) => a + b, 0);
+  const pick = () => {
+    let r = rand() * totW;
+    for (let i = 0; i < wN.length; i++) if ((r -= wN[i]) <= 0) return i;
+    return wN.length - 1;
+  };
+  const sources = Array.from({ length: 50 }, pick);
+  function outAdj() {
+    const out = jn.map(() => []);
+    runs.forEach((r, k) => {
+      const [a, b] = dir[k] === 1 ? ends[k] : [ends[k][1], ends[k][0]];
+      out[a].push([b, r.len]);
+    });
+    return out;
   }
+  function objective() {
+    const out = outAdj();
+    // every junction must be able to get back to the first source (together
+    // with the forward searches below, that means everything reaches everything)
+    {
+      const back = jn.map(() => []);
+      out.forEach((l, v) => l.forEach(([w]) => back[w].push(v)));
+      const seen = new Uint8Array(jn.length);
+      const q = [sources[0]];
+      seen[sources[0]] = 1;
+      let c = 1;
+      while (q.length) {
+        const v = q.pop();
+        for (const u of back[v])
+          if (!seen[u]) {
+            seen[u] = 1;
+            c++;
+            q.push(u);
+          }
+      }
+      if (c < jn.length) return Infinity;
+    }
+    let tot = 0;
+    for (const s0 of sources) {
+      const d = new Float64Array(jn.length).fill(Infinity);
+      d[s0] = 0;
+      const h = [[0, s0]];
+      while (h.length) {
+        let bi = 0;
+        for (let i = 1; i < h.length; i++) if (h[i][0] < h[bi][0]) bi = i;
+        const [dv, v] = h[bi];
+        h[bi] = h[h.length - 1];
+        h.pop();
+        if (dv > d[v]) continue;
+        for (const [w, len] of out[v])
+          if (dv + len < d[w]) {
+            d[w] = dv + len;
+            h.push([d[w], w]);
+          }
+      }
+      for (let i = 0; i < jn.length; i++) {
+        if (d[i] === Infinity) return Infinity;
+        tot += wN[i] * d[i];
+      }
+    }
+    return tot;
+  }
+  let best = objective();
+  const start = best;
+  let flips = 0;
+  for (let sweep = 0; sweep < 3; sweep++) {
+    let improved = false;
+    for (let k = 0; k < runs.length; k++) {
+      dir[k] = -dir[k];
+      const o = objective();
+      if (o < best) {
+        best = o;
+        flips++;
+        improved = true;
+      } else dir[k] = -dir[k];
+    }
+    if (!improved) break;
+  }
+  console.log(`directions: ${flips} flips, weighted route length ${((100 * best) / start).toFixed(1)}% of the starting orientation`);
+  beams = runs.map((r, k) => (dir[k] === 1 ? { link: r, from: r.a, to: r.b, pts: r.pts } : { link: r, from: r.b, to: r.a, pts: [...r.pts].reverse() }));
+  for (const r of runs) r.oneway = 'F';
 }
-makeBeams();
-console.log(`beams: ${beams.length} (${upgraded} one-way pieces upgraded to twin)`);
 
 // ---- 5. station sites (chosen before building geometry) ---------------------------
 const parcelsRaw = fs.existsSync(raw('parcels.json')) ? JSON.parse(fs.readFileSync(raw('parcels.json'))) : { rows: [] };
@@ -898,6 +1069,7 @@ function largestSCC() {
   return new Set(comps[0]);
 }
 const keep = largestSCC();
+console.log(`graph: ${nodes.length} nodes, ${keep.size} in the largest strongly connected part; ${stations.length} stations placed`);
 const nmap = new Map();
 const fNodes = [];
 for (const n of nodes)
@@ -938,8 +1110,9 @@ const stats = {
   layout: 'streets',
   routeMiles: Math.round((routeKm / 1.609) * 10) / 10,
   guidewayMiles: Math.round((beamKm / 1.609) * 10) / 10,
-  twinMiles: Math.round(([...selected].filter((l) => l.oneway === 'B').reduce((a, l) => a + l.len, 0) / 1609) * 10) / 10,
-  oneWayMiles: Math.round(([...selected].filter((l) => l.oneway !== 'B').reduce((a, l) => a + l.len, 0) / 1609) * 10) / 10,
+  freewayMiles: Math.round(([...selected].filter((l) => l.freeway).reduce((a, l) => a + l.len, 0) / 1609) * 10) / 10,
+  crossings: [...selNodes()].filter((n) => selDegree(n) >= 4).length,
+  tees: [...selNodes()].filter((n) => selDegree(n) === 3).length,
   streets: new Set([...selected].map((l) => l.name)).size,
   bridges: [...selected].filter((l) => l.bridge).length,
   stationSites: uniqueSites,

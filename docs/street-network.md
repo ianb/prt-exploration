@@ -1,4 +1,4 @@
-# Minneapolis on real streets (version 2)
+# Minneapolis on real streets (versions 2 and 3)
 
 The half-mile grid (version 1, [minneapolis-v1.md](minneapolis-v1.md)) was
 a way to get the simulator running. This version lays the guideway over
@@ -116,3 +116,56 @@ Levers to close the gap with the car:
 - higher line speed on long straight runs (15 m/s is 34 mph);
 - more crosstown lines, for more direct routes;
 - faster boarding.
+
+## Version 3: every line one-way
+
+Single beams are thinner and less intrusive than twin guideway, so version 3
+uses only one-way lines. Traffic direction on the street doesn't matter; the
+guideway can run either way.
+
+![Version 3: one-way lines only](img/oneway-network.png)
+
+**Changes from version 2:**
+- **No twin beams.** Every line has a way back: any link whose loss would
+  cut the network in two is joined into a loop by the shortest street route
+  (up to 3 km), or dropped if there's none. 62 loops were closed this way and
+  4.8 km dropped.
+- **Directions are optimized.** It starts from a direction for every line
+  that keeps everything reachable, then flips lines one at a time whenever
+  that shortens demand-weighted travel and keeps everything reachable.
+- **Junction costs.** Corridor choice counts a four-way crossing as 0.6 km of
+  extra guideway (two levels and two turn ramps), and a three-way junction as
+  0.15 km.
+- **Freeways** are candidates, at a 30% cost penalty. 6 miles were used.
+- **Stations** stay about 155 m or more from any junction (ramp clearance
+  plus the station's own length). Curves elsewhere are fine.
+
+**Cost.** The SIKA report (Swedish government, 2003 prices) puts an elevated
+twin guideway at about 1.5× the cost of a single one per km, since columns
+and foundations are shared ([SIKA](https://issuu.com/simplylovelife/docs/sika_prt_report/71)).
+On that basis:
+
+| | Version 2 (mostly twin) | Version 3 (one-way) |
+|---|---|---|
+| Street miles | 138 | 148 |
+| Beam miles | 249 | 148 |
+| Cost in single-beam-equivalent miles (about) | ~205 | 148 |
+| Station sites / one-direction stations | 287 / 528 | 273 / 273 |
+| Junctions: crossings / tees | – | 73 / 230 |
+| People + jobs within ¼ / ⅓ / ½ mile walk | 76 / 86 / 91% | 76 / 84 / 89% |
+| Median route vs straight line | 1.77× | 2.06× |
+
+**Door-to-door times**, median minutes at 7,500 trips/hour, 4–5 PM:
+
+| Distance | One-way | Twin (v2) | Car | Transit | Bike |
+|---|---|---|---|---|---|
+| 1–2 km | 14.5 | 14 | 7 | 21 | 14 |
+| 2–3 km | 16.4 | 16 | 11 | 20 | 18 |
+| 3–5 km | 18.8 | 18 | 13 | 30 | 14 |
+| 5–8 km | 23.2 | 21 | 17 | 37 | 27 |
+| 8–15 km | 27.0 | 24 | 21 | 47 | – |
+
+The one-way network costs roughly 30% less, and trips take 0–3 minutes
+longer, mostly on longer trips. It carries 7,500 trips/hour comfortably. At
+12,000 it breaks down, and the merge controller's deadlock-breaking lets
+vehicles collide. That's a known simulator weakness, not a design result.
