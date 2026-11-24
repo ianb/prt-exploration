@@ -14,6 +14,8 @@ travel-survey demand.
   real streets, and door-to-door times compared with car, transit and bike
 - [docs/minneapolis-v1.md](docs/minneapolis-v1.md): the first network (an
   idealized half-mile grid), the simulation model, and early results
+- [docs/speed-and-comfort.md](docs/speed-and-comfort.md): research on PRT
+  speeds and ride comfort, faster lines, and route directness
 - [docs/data-sources.md](docs/data-sources.md): trip data, what the census
   commute data says about Minneapolis, and other options
 

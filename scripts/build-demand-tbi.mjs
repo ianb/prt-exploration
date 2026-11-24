@@ -23,7 +23,9 @@ import { project } from '../src/geo.js';
 import { csvRows } from './csv.mjs';
 
 const raw = (p) => new URL(`../data/raw/${p}`, import.meta.url);
-const net = JSON.parse(fs.readFileSync(new URL('../data/network.json', import.meta.url)));
+// optional: --net=<name> builds for data/<name>.json -> data/demand-tbi-<name>.json
+const NET = (process.argv.find((a) => a.startsWith('--net=')) || '--net=network').slice(6);
+const net = JSON.parse(fs.readFileSync(new URL(`../data/${NET}.json`, import.meta.url)));
 const MIN_TRIP = 700; // metres between stations; anything shorter is a walk
 
 // ---- blocks ----------------------------------------------------------------
@@ -233,5 +235,5 @@ const out = {
     }).filter((x) => x[3] > 0),
   },
 };
-fs.writeFileSync(new URL('../data/demand-tbi.json', import.meta.url), JSON.stringify(out));
+fs.writeFileSync(new URL(`../data/demand-tbi${NET === 'network' ? '' : '-' + NET}.json`, import.meta.url), JSON.stringify(out));
 console.log(JSON.stringify({ ...out.totals, byHour: out.byHour, odRows: out.od.length }, null, 2));

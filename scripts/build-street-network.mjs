@@ -44,6 +44,13 @@ const P = {
   loopCloseMax: 3000, // m, longest connection added to close a dead end into a loop
   connectKm: 30, // extra street length for shortcuts that make routes more direct
   connectMinRatio: 1.3, // only add a shortcut where the network route is this much longer than the street route
+  layout: 'lattice', // 'lattice' (parallel one-way lines on through streets) or 'greedy' (corridors by coverage)
+  latticeMinLineKm: 2.5, // a street must run this far to be a lattice line (long lines keep routes direct)
+  latticeSpacing: 800, // m between parallel lines
+  latticeSpacingDense: 400, // m between parallel lines where activity is dense
+  latticeDenseFactor: 3, // "dense" = this many times the city's average people+jobs per km2
+  latticeMinGainPerKm: 0.002, // stop adding lines to a family below this share of its activity per km
+  directShortcutKm: 0, // extra one-way street length added where one-way routes are much longer than street routes
   turnPenalty: 250, // m added per change of street when closing loops, so lines run straight on
   rampX: 70, // m from junction centre to diverge / merge points
   rampRadius: 30,
@@ -60,6 +67,20 @@ const P = {
   latAccel: 1.5,
 };
 
+for (const a of process.argv.slice(2)) {
+  const m = /^--(\w+)=(.*)$/.exec(a);
+  if (m) P[m[1]] = isNaN(Number(m[2])) ? m[2] : Number(m[2]);
+}
+// Geometry follows the design line speed: slow-down and speed-up lanes for
+// turns and stations are long enough for comfortable braking and acceleration
+// (0.2 g, seated riders, per ASCE 21 and Anderson's PRT design values).
+{
+  const a = 1.96;
+  const vt = Math.sqrt(3.0 * P.rampRadius); // a 30 m ramp curve at 0.3 g of usable cornering
+  const v = P.vMain;
+  P.rampX = Math.round(P.rampRadius + Math.max(0, (v * v - vt * vt) / (2 * a)) + 10);
+  P.stationHalfSpan = Math.round(P.berthHalfLength + (v * v) / (2 * a) + 10);
+}
 const raw = (p) => new URL(`../data/raw/${p}`, import.meta.url);
 const geo = JSON.parse(fs.readFileSync(new URL('../data/geo.json', import.meta.url)));
 const city = geo.city.map(project);
@@ -294,6 +315,8 @@ function selectPiece(pc) {
   pc.taken = true;
   for (const l of pc.links) select(l);
 }
+if (P.layout === 'lattice') latticeSelect();
+else {
 {
   let best = null;
   let bs = -1;
@@ -339,6 +362,127 @@ for (;;) {
   }
   if (!best) break;
   selectPiece(best);
+}
+}
+
+// Lattice layout: pick whole through streets in two families of roughly
+// parallel lines (north-south and east-west; downtown uses its own rotated
+// grid), spaced about half a mile apart, closer where people and jobs are
+// dense. Neighbouring parallel lines then get opposite directions and connect
+// wherever they cross, like the idealized grid but on real streets.
+function latticeSelect() {
+  // whole named streets, chained through same-name continuations
+  const lines = [];
+  const seen = new Set();
+  const sameNext = (n, l) => {
+    const c = n.links.filter((m) => m !== l && m.name === l.name);
+    return c.length === 1 ? c[0] : null;
+  };
+  for (const l0 of links) {
+    if (seen.has(l0) || l0.freeway) continue;
+    seen.add(l0);
+    const chain = [l0];
+    for (const d of [1, -1]) {
+      let cur = l0;
+      let end = d === 1 ? l0.b : l0.a;
+      for (;;) {
+        const nx = sameNext(end, cur);
+        if (!nx || seen.has(nx) || nx.freeway) break;
+        seen.add(nx);
+        if (d === 1) chain.push(nx);
+        else chain.unshift(nx);
+        end = nx.a === end ? nx.b : nx.a;
+        cur = nx;
+      }
+    }
+    const pts = chain.flatMap((l) => l.pts);
+    const len = chain.reduce((a, l) => a + l.len, 0);
+    if (len < P.latticeMinLineKm * 1000) continue;
+    lines.push({ links: chain, pts, len, name: l0.name });
+  }
+  // family of each line by its overall bearing
+  const DT = { c: [600, 3200], r: 1300, angle: 59 };
+  const famOf = (ln) => {
+    // length-weighted mean direction, mod 90
+    let sx = 0;
+    let sy = 0;
+    for (const l of ln.links) {
+      const a = l.pts[0];
+      const b = l.pts[l.pts.length - 1];
+      const ang = Math.atan2(b[1] - a[1], b[0] - a[0]) * 4; // x4 folds directions mod 90 degrees
+      sx += Math.cos(ang) * l.len;
+      sy += Math.sin(ang) * l.len;
+    }
+    const a90 = (((Math.atan2(sy, sx) / 4) * 180) / Math.PI + 90) % 90;
+    const mid = ln.pts[Math.floor(ln.pts.length / 2)];
+    const straight = dist(ln.pts[0], ln.pts[ln.pts.length - 1]) / ln.len;
+    if (straight < 0.8) return null;
+    const near = (x, y) => Math.min(Math.abs(x - y), 90 - Math.abs(x - y)) < 15;
+    const end0 = ln.pts[0];
+    const end1 = ln.pts[ln.pts.length - 1];
+    const along = Math.abs(end1[0] - end0[0]) > Math.abs(end1[1] - end0[1]) ? 'EW' : 'NS';
+    if (dist(mid, DT.c) < DT.r && near(a90, DT.angle)) {
+      const ang = Math.atan2(end1[1] - end0[1], end1[0] - end0[0]) * (180 / Math.PI);
+      const rel = (((ang - DT.angle) % 180) + 180) % 180;
+      return rel < 45 || rel > 135 ? 'dtA' : 'dtB';
+    }
+    if (near(a90, 0)) return along;
+    return null;
+  };
+  for (const ln of lines) ln.fam = famOf(ln);
+  const fams = ['NS', 'EW', 'dtA', 'dtB'];
+  // local spacing target from activity density
+  const densAt = (p) => blocksNear([p], 500).reduce((a, i) => a + blocks[i].w, 0) / (Math.PI * 0.25); // per km^2
+  const cityDens = W / 140; // ~140 km^2 of land
+  const spacingAt = (p) => (densAt(p) > P.latticeDenseFactor * cityDens ? P.latticeSpacingDense : P.latticeSpacing);
+  const blockSpacing = blocks.map((b) => (b.w > 0 ? spacingAt(b.p) : P.latticeSpacing));
+  const inDT = blocks.map((b) => dist(b.p, DT.c) < DT.r);
+  let chosen = 0;
+  for (const fam of fams) {
+    const famLines = lines.filter((l) => l.fam === fam);
+    const cov = new Uint8Array(blocks.length);
+    // which blocks this family serves: downtown families only downtown, others elsewhere
+    const serves = (i) => (fam.startsWith('dt') ? inDT[i] : !inDT[i]);
+    for (const ln of famLines) ln.cover = blocksNear(ln.pts, P.latticeSpacing / 2 + 50).filter((i) => serves(i) && polyDist(blocks[i].p, ln.pts) <= blockSpacing[i] / 2 + 50);
+    const famW = blocks.reduce((a, b, i) => a + (serves(i) ? b.w : 0), 0);
+    for (;;) {
+      let best = null;
+      let bs = 0;
+      let bg = 0;
+      for (const ln of famLines) {
+        if (ln.taken) continue;
+        const g = ln.cover.reduce((a, i) => a + (cov[i] ? 0 : blocks[i].w), 0);
+        const c = ln.links.reduce((a, l) => a + cost(l), 0);
+        if (g / c > bs) {
+          bs = g / c;
+          best = ln;
+          bg = g;
+        }
+      }
+      if (!best || bg / famW / (best.len / 1000) < P.latticeMinGainPerKm) break;
+      best.taken = true;
+      for (const i of best.cover) cov[i] = 1;
+      for (const l of best.links) select(l);
+      chosen++;
+    }
+    // alternate directions across the family, in order of position
+    const axis = fam === 'NS' ? [0, 1] : fam === 'EW' ? [1, 0] : fam === 'dtA' ? [Math.cos((DT.angle * Math.PI) / 180), Math.sin((DT.angle * Math.PI) / 180)] : [-Math.sin((DT.angle * Math.PI) / 180), Math.cos((DT.angle * Math.PI) / 180)];
+    const normal = [-axis[1], axis[0]];
+    const taken = famLines.filter((l) => l.taken);
+    const off = (ln) => {
+      const m = ln.pts[Math.floor(ln.pts.length / 2)];
+      return m[0] * normal[0] + m[1] * normal[1];
+    };
+    taken.sort((x, y) => off(x) - off(y));
+    taken.forEach((ln, k) => {
+      const sign = k % 2 === 0 ? 1 : -1;
+      for (const l of ln.links) {
+        const d = sub(l.pts[l.pts.length - 1], l.pts[0]);
+        l.pref = (d[0] * axis[0] + d[1] * axis[1] > 0) === sign > 0 ? 1 : -1;
+      }
+    });
+  }
+  console.log(`lattice: ${chosen} street lines chosen from ${lines.length} candidates`);
 }
 console.log(`corridors: ${selected.size} links, ${Math.round([...selected].reduce((a, l) => a + l.len, 0) / 1000)} km, coverage ${(coveredW / W).toFixed(3)}`);
 
@@ -507,6 +651,83 @@ for (let changed = true; changed; ) {
   console.log(`shortcuts added: ${Math.round(added / 100) / 10} km`);
 }
 
+// Join separate pieces of network to the largest one by the shortest street
+// route (up to 4 km); drop pieces that can't be joined.
+{
+  let joined = 0;
+  let dropped = 0;
+  for (let iter = 0; iter < 200; iter++) {
+    const nodes = [...selNodes()];
+    const comp = new Map();
+    let nc = 0;
+    for (const n0 of nodes) {
+      if (comp.has(n0)) continue;
+      const q = [n0];
+      comp.set(n0, nc);
+      while (q.length) {
+        const n = q.pop();
+        for (const l of n.links) {
+          if (!selected.has(l)) continue;
+          const m = l.a === n ? l.b : l.a;
+          if (!comp.has(m)) {
+            comp.set(m, nc);
+            q.push(m);
+          }
+        }
+      }
+      nc++;
+    }
+    if (nc <= 1) break;
+    const size = new Array(nc).fill(0);
+    for (const c of comp.values()) size[c]++;
+    const big = size.indexOf(Math.max(...size));
+    // smallest other component
+    let c0 = -1;
+    for (let c = 0; c < nc; c++) if (c !== big && (c0 < 0 || size[c] < size[c0])) c0 = c;
+    const src = nodes.filter((n) => comp.get(n) === c0);
+    const dmap = new Map();
+    const prev = new Map();
+    const h = [];
+    for (const n of src) {
+      dmap.set(n, 0);
+      h.push([0, n]);
+    }
+    let hit = null;
+    while (h.length) {
+      h.sort((x, y) => y[0] - x[0]);
+      const [d, n] = h.pop();
+      if (d > dmap.get(n)) continue;
+      if (comp.has(n) && comp.get(n) !== c0) {
+        hit = n;
+        break;
+      }
+      for (const l of n.links) {
+        if (selected.has(l)) continue;
+        const m = l.a === n ? l.b : l.a;
+        const nd = d + cost(l) * 1000;
+        if (nd > 4000) continue;
+        if (nd < (dmap.get(m) ?? Infinity)) {
+          dmap.set(m, nd);
+          prev.set(m, l);
+          h.push([nd, m]);
+        }
+      }
+    }
+    if (hit) {
+      for (let n = hit; comp.get(n) !== c0; ) {
+        const l = prev.get(n);
+        select(l);
+        n = l.a === n ? l.b : l.a;
+      }
+      joined++;
+    } else {
+      for (const l of [...selected]) if (comp.get(l.a) === c0) selected.delete(l);
+      dropped++;
+    }
+  }
+  console.log(`separate pieces: ${joined} joined, ${dropped} dropped`);
+}
+
 // Every line is one-way, so every piece of guideway needs a way back: the
 // network must have no "bridges" in the graph sense (a link whose removal
 // cuts the network in two). For each one, connect the cut-off side back by
@@ -622,17 +843,21 @@ for (let changed = true; changed; ) {
   console.log(`one-way loops: ${joined} connections added, ${droppedKm.toFixed(1)} km dropped`);
 }
 
-// Merge selected links into runs between real junctions (where 3+ selected
-// pieces meet) or line ends, so a run is one continuous piece of guideway.
-{
+// ---- 3. runs and directions --------------------------------------------------------
+// A run is a continuous piece of guideway between junctions (where 3+ selected
+// links meet). Every run is one-way. Directions start from a strong
+// orientation (every junction can reach every other) and are improved by
+// flipping runs whenever that shortens demand-weighted travel and keeps
+// everything reachable. Then one-way shortcuts are added where routes are
+// much longer than the street distance, and directions are tuned again.
+function makeRuns() {
   const runs = [];
   const done = new Set();
   const deg = (n) => n.links.filter((l) => selected.has(l)).length;
   const isJ = (n) => deg(n) !== 2;
   for (const l0 of selected) {
     if (done.has(l0)) continue;
-    // walk to one end of the run
-    let chain = [[l0, true]];
+    const chain = [[l0, true]];
     done.add(l0);
     for (const dir of [1, -1]) {
       let cur = l0;
@@ -649,43 +874,74 @@ for (let changed = true; changed; ) {
       }
     }
     const pts = [];
-    let ow = null;
     for (const [l, f] of chain) {
       const p = f ? l.pts : [...l.pts].reverse();
       pts.push(...(pts.length ? p.slice(1) : p));
-      const o = l.oneway === 'B' ? 'B' : (l.oneway === 'F') === f ? 'F' : 'T';
-      ow = ow === null ? o : ow === o ? ow : 'B';
     }
     const a = chain[0][1] ? chain[0][0].a : chain[0][0].b;
     const last = chain[chain.length - 1];
     const b = last[1] ? last[0].b : last[0].a;
+    if (a === b) continue; // closed ring with no junction (rare): skip
     const names = [...new Set(chain.map(([l]) => l.name))];
-    runs.push({ id: runs.length, name: names.join(' / '), pts, len: polylineLength(pts), oneway: a === b ? 'B' : ow, a, b, bridge: chain.some(([l]) => l.bridge), freeway: chain.some(([l]) => l.freeway) });
+    runs.push({ id: runs.length, chain, name: names.join(' / '), pts, len: polylineLength(pts), a, b, bridge: chain.some(([l]) => l.bridge), freeway: chain.some(([l]) => l.freeway) });
   }
-  // replace selection by runs; node.links must point at runs now
-  for (const n of gnodes.values()) n.links = n.links.filter((l) => !selected.has(l));
-  selected.clear();
-  for (const r of runs) {
-    if (r.a === r.b) continue; // closed ring with no junction: skip (rare)
-    selected.add(r);
-    r.a.links.push(r);
-    r.b.links.push(r);
-  }
-  console.log(`runs between junctions: ${selected.size}`);
+  return runs;
 }
 
-// ---- 3. directions -----------------------------------------------------------------
-// Every run gets one direction. Start from a strong orientation (every
-// junction can reach every other), then flip runs one at a time whenever that
-// shortens demand-weighted travel and keeps everything reachable.
-let beams;
-{
-  const runs = [...selected];
-  const jn = [...selNodes()];
+const activityCache = new Map();
+const activityAt = (n) => {
+  if (!activityCache.has(n)) activityCache.set(n, blocksNear([n.p], 500).reduce((a, i) => a + blocks[i].w, 0) + 1);
+  return activityCache.get(n);
+};
+let rnd3 = 777;
+const rand3 = () => ((rnd3 = (rnd3 * 1103515245 + 12345) % 2147483648) / 2147483648);
+
+class Heap {
+  constructor() {
+    this.a = [];
+  }
+  push(k, v) {
+    const a = this.a;
+    a.push([k, v]);
+    let i = a.length - 1;
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (a[p][0] <= a[i][0]) break;
+      [a[p], a[i]] = [a[i], a[p]];
+      i = p;
+    }
+  }
+  pop() {
+    const a = this.a;
+    const top = a[0];
+    const last = a.pop();
+    if (a.length) {
+      a[0] = last;
+      let i = 0;
+      for (;;) {
+        const l = 2 * i + 1;
+        const r = l + 1;
+        let m = i;
+        if (l < a.length && a[l][0] < a[m][0]) m = l;
+        if (r < a.length && a[r][0] < a[m][0]) m = r;
+        if (m === i) break;
+        [a[m], a[i]] = [a[i], a[m]];
+        i = m;
+      }
+    }
+    return top;
+  }
+  get size() {
+    return this.a.length;
+  }
+}
+
+// Orient runs. `init` = starting directions (1 = a->b, -1 = b->a) or null.
+function orient(runs, init) {
+  const jn = [...new Set(runs.flatMap((r) => [r.a, r.b]))];
   const ji = new Map(jn.map((n, i) => [n, i]));
   const ends = runs.map((r) => [ji.get(r.a), ji.get(r.b)]);
-  // initial strong orientation by DFS: tree edges away from the root, others back up
-  const dir = new Int8Array(runs.length); // 1 = a->b, -1 = b->a
+  const dir = new Int8Array(runs.length);
   {
     const adj = jn.map(() => []);
     runs.forEach((r, k) => {
@@ -694,10 +950,9 @@ let beams;
     });
     const disc = new Array(jn.length).fill(-1);
     const used = new Uint8Array(runs.length);
-    let t = 0;
     for (let s0 = 0; s0 < jn.length; s0++) {
       if (disc[s0] !== -1) continue;
-      disc[s0] = t++;
+      disc[s0] = 1;
       const stack = [[s0, 0]];
       while (stack.length) {
         const top = stack[stack.length - 1];
@@ -706,37 +961,96 @@ let beams;
           const [w, k] = adj[v][top[1]++];
           if (used[k]) continue;
           used[k] = 1;
-          dir[k] = ends[k][0] === v ? 1 : -1; // orient v -> w
+          dir[k] = ends[k][0] === v ? 1 : -1;
           if (disc[w] === -1) {
-            disc[w] = t++;
+            disc[w] = 1;
             stack.push([w, 0]);
           }
         } else stack.pop();
       }
     }
   }
-  const wN = jn.map((n) => blocksNear([n.p], 500).reduce((a, i) => a + blocks[i].w, 0) + 1);
-  let rnd = 777;
-  const rand = () => ((rnd = (rnd * 1103515245 + 12345) % 2147483648) / 2147483648);
+  // repair: flip runs between strongly connected parts until everything connects
+  const sccCount = () => {
+    const out = jn.map(() => []);
+    runs.forEach((r, k) => {
+      const [a, b] = dir[k] === 1 ? ends[k] : [ends[k][1], ends[k][0]];
+      out[a].push(b);
+    });
+    const index = new Array(jn.length).fill(-1);
+    const low = new Array(jn.length).fill(0);
+    const on = new Uint8Array(jn.length);
+    const st = [];
+    const comp = new Int32Array(jn.length);
+    let ix = 0;
+    let nc = 0;
+    for (let s0 = 0; s0 < jn.length; s0++) {
+      if (index[s0] !== -1) continue;
+      const work = [[s0, 0]];
+      index[s0] = low[s0] = ix++;
+      st.push(s0);
+      on[s0] = 1;
+      while (work.length) {
+        const top = work[work.length - 1];
+        const v = top[0];
+        if (top[1] < out[v].length) {
+          const w = out[v][top[1]++];
+          if (index[w] === -1) {
+            index[w] = low[w] = ix++;
+            st.push(w);
+            on[w] = 1;
+            work.push([w, 0]);
+          } else if (on[w]) low[v] = Math.min(low[v], index[w]);
+        } else {
+          work.pop();
+          if (work.length) low[work[work.length - 1][0]] = Math.min(low[work[work.length - 1][0]], low[v]);
+          if (low[v] === index[v]) {
+            let w;
+            do {
+              w = st.pop();
+              on[w] = 0;
+              comp[w] = nc;
+            } while (w !== v);
+            nc++;
+          }
+        }
+      }
+    }
+    return { nc, comp };
+  };
+  // From that always-connected start, turn each run toward its preferred
+  // direction (e.g. alternating lattice lines) whenever that keeps everything
+  // reachable.
+  if (init) {
+    let agreed = 0;
+    for (let sweep = 0; sweep < 3; sweep++) {
+      let changed = false;
+      for (let k = 0; k < runs.length; k++) {
+        if (dir[k] === init[k]) continue;
+        dir[k] = init[k];
+        if (sccCount().nc === 1) changed = true;
+        else dir[k] = -dir[k];
+      }
+      if (!changed) break;
+    }
+    for (let k = 0; k < runs.length; k++) if (dir[k] === init[k]) agreed++;
+    console.log(`preferred directions kept on ${agreed} of ${runs.length} runs`);
+  }
+  const wN = jn.map(activityAt);
   const totW = wN.reduce((a, b) => a + b, 0);
   const pick = () => {
-    let r = rand() * totW;
+    let r = rand3() * totW;
     for (let i = 0; i < wN.length; i++) if ((r -= wN[i]) <= 0) return i;
     return wN.length - 1;
   };
-  const sources = Array.from({ length: 50 }, pick);
-  function outAdj() {
+  const sources = Array.from({ length: 60 }, pick);
+  function objective() {
     const out = jn.map(() => []);
     runs.forEach((r, k) => {
       const [a, b] = dir[k] === 1 ? ends[k] : [ends[k][1], ends[k][0]];
       out[a].push([b, r.len]);
     });
-    return out;
-  }
-  function objective() {
-    const out = outAdj();
-    // every junction must be able to get back to the first source (together
-    // with the forward searches below, that means everything reaches everything)
+    // everything must get back to the first source
     {
       const back = jn.map(() => []);
       out.forEach((l, v) => l.forEach(([w]) => back[w].push(v)));
@@ -759,23 +1073,22 @@ let beams;
     for (const s0 of sources) {
       const d = new Float64Array(jn.length).fill(Infinity);
       d[s0] = 0;
-      const h = [[0, s0]];
-      while (h.length) {
-        let bi = 0;
-        for (let i = 1; i < h.length; i++) if (h[i][0] < h[bi][0]) bi = i;
-        const [dv, v] = h[bi];
-        h[bi] = h[h.length - 1];
-        h.pop();
+      const h = new Heap();
+      h.push(0, s0);
+      while (h.size) {
+        const [dv, v] = h.pop();
         if (dv > d[v]) continue;
         for (const [w, len] of out[v])
           if (dv + len < d[w]) {
             d[w] = dv + len;
-            h.push([d[w], w]);
+            h.push(d[w], w);
           }
       }
       for (let i = 0; i < jn.length; i++) {
         if (d[i] === Infinity) return Infinity;
-        tot += wN[i] * d[i];
+        // weight by activity, relative to straight-line distance so long trips don't dominate
+        const sl = dist(jn[s0].p, jn[i].p);
+        if (sl > 800) tot += (wN[i] * d[i]) / sl;
       }
     }
     return tot;
@@ -796,7 +1109,153 @@ let beams;
     }
     if (!improved) break;
   }
-  console.log(`directions: ${flips} flips, weighted route length ${((100 * best) / start).toFixed(1)}% of the starting orientation`);
+  console.log(`directions: ${flips} flips, weighted route ratio ${((100 * best) / start).toFixed(1)}% of the start`);
+  return dir;
+}
+function setLinkDirs(runs, dir) {
+  runs.forEach((r, k) => {
+    for (const [l, f] of r.chain) l.dir = (dir[k] === 1) === f ? 1 : -1;
+  });
+}
+function runDirsFromLinks(runs) {
+  return runs.map((r) => {
+    let fw = 0;
+    for (const [l, f] of r.chain) fw += (l.dir === 1) === f ? l.len : -l.len;
+    return fw >= 0 ? 1 : -1;
+  });
+}
+
+// Directed shortcuts: for busy pairs of places where the one-way route is much
+// longer than a street route, add the street route as a new one-way line in
+// the direction that helps. Adding a one-way link never strands anyone.
+function directedShortcuts() {
+  const budget = P.directShortcutKm * 1000;
+  let added = 0;
+  let count = 0;
+  const travel = (l, from) => {
+    // can a vehicle use link l leaving node `from`? returns cost or Infinity
+    if (selected.has(l)) {
+      const forward = l.a === from;
+      return (l.dir === 1) === forward ? l.len : Infinity;
+    }
+    return cost(l) * 1000;
+  };
+  for (let iter = 0; iter < 200 && added < budget; iter++) {
+    const sn = [...selNodes()];
+    const wN = sn.map(activityAt);
+    const totW = wN.reduce((a, b) => a + b, 0);
+    const pick = () => {
+      let r = rand3() * totW;
+      for (let i = 0; i < wN.length; i++) if ((r -= wN[i]) <= 0) return i;
+      return wN.length - 1;
+    };
+    let best = null;
+    let bestScore = 0;
+    for (let k = 0; k < 24; k++) {
+      const si = pick();
+      const s0 = sn[si];
+      // network distances (selected links only, in their direction)
+      const dNet = new Map([[s0, 0]]);
+      {
+        const h = new Heap();
+        h.push(0, s0);
+        while (h.size) {
+          const [d, n] = h.pop();
+          if (d > dNet.get(n)) continue;
+          for (const l of n.links) {
+            if (!selected.has(l)) continue;
+            const c = travel(l, n);
+            if (c === Infinity) continue;
+            const m = l.a === n ? l.b : l.a;
+            if (d + c < (dNet.get(m) ?? Infinity)) {
+              dNet.set(m, d + c);
+              h.push(d + c, m);
+            }
+          }
+        }
+      }
+      // with new streets allowed
+      const dAll = new Map([[s0, 0]]);
+      const prev = new Map();
+      {
+        const h = new Heap();
+        h.push(0, s0);
+        while (h.size) {
+          const [d, n] = h.pop();
+          if (d > dAll.get(n)) continue;
+          if (d > 12000) break;
+          for (const l of n.links) {
+            const c = travel(l, n);
+            if (c === Infinity) continue;
+            const m = l.a === n ? l.b : l.a;
+            if (d + c < (dAll.get(m) ?? Infinity)) {
+              dAll.set(m, d + c);
+              prev.set(m, [l, n]);
+              h.push(d + c, m);
+            }
+          }
+        }
+      }
+      for (let j = 0; j < sn.length; j++) {
+        const t = sn[j];
+        const sl = dist(s0.p, t.p);
+        if (sl < 1200) continue;
+        const a = dNet.get(t);
+        const b = dAll.get(t);
+        if (a === undefined || b === undefined || a <= b * 1.05) continue;
+        // new street length on the improved path
+        let newLen = 0;
+        for (let n = t; n !== s0; ) {
+          const [l, from] = prev.get(n);
+          if (!selected.has(l)) newLen += l.len;
+          n = from;
+        }
+        if (newLen < 50) continue;
+        const score = (wN[si] * wN[j] * (a - b)) / sl / newLen;
+        if (score > bestScore) {
+          bestScore = score;
+          best = { s0, t, prev };
+        }
+      }
+    }
+    if (!best) break;
+    for (let n = best.t; n !== best.s0; ) {
+      const [l, from] = best.prev.get(n);
+      if (!selected.has(l)) {
+        select(l);
+        l.dir = l.a === from ? 1 : -1;
+        added += l.len;
+      }
+      n = from;
+    }
+    count++;
+  }
+  console.log(`directed shortcuts: ${count} added, ${(added / 1000).toFixed(1)} km`);
+}
+
+let beams;
+{
+  let runs = makeRuns();
+  const prefInit = runs.map((r) => {
+    let v = 0;
+    for (const [l, f] of r.chain) if (l.pref) v += (l.pref === 1) === f ? l.len : -l.len;
+    return v >= 0 ? 1 : -1;
+  });
+  let dir = orient(runs, P.layout === 'lattice' ? prefInit : null);
+  setLinkDirs(runs, dir);
+  directedShortcuts();
+  runs = makeRuns();
+  dir = orient(runs, runDirsFromLinks(runs));
+  setLinkDirs(runs, dir);
+  // replace the selection by runs; node.links must point at runs now
+  for (const n of gnodes.values()) n.links = n.links.filter((l) => !selected.has(l));
+  selected.clear();
+  for (const r of runs) {
+    selected.add(r);
+    r.a.links.push(r);
+    r.b.links.push(r);
+  }
+  console.log(`runs between junctions: ${selected.size}`);
   beams = runs.map((r, k) => (dir[k] === 1 ? { link: r, from: r.a, to: r.b, pts: r.pts } : { link: r, from: r.b, to: r.a, pts: [...r.pts].reverse() }));
   for (const r of runs) r.oneway = 'F';
 }
@@ -895,6 +1354,37 @@ const edge = (from, to, pts, vmax, kind, extra = {}) => {
   edges.push({ id: edges.length, from, to, pts: pp, len: polylineLength(pp), vmax, kind, ...extra });
   return edges.length - 1;
 };
+// Main-line edges, split into pieces of at most 150 m, each tagged with its
+// tightest curve radius so speed can follow the street's bends.
+function radiusOf(pts) {
+  const cum = cumulative(pts);
+  const L = cum[cum.length - 1];
+  let rmin = Infinity;
+  for (let s0 = 0; s0 + 40 <= L; s0 += 10) {
+    const A = pointAlong(pts, cum, s0);
+    const B = pointAlong(pts, cum, s0 + 20);
+    const C = pointAlong(pts, cum, s0 + 40);
+    const a = dist(B, C);
+    const b = dist(A, C);
+    const c = dist(A, B);
+    const area2 = Math.abs((B[0] - A[0]) * (C[1] - A[1]) - (B[1] - A[1]) * (C[0] - A[0]));
+    if (area2 > 1e-6) rmin = Math.min(rmin, (a * b * c) / (2 * area2));
+  }
+  return rmin;
+}
+function mainEdge(from, to, pts, extra) {
+  const cum = cumulative(pts);
+  const L = cum[cum.length - 1];
+  const k = Math.max(1, Math.ceil(L / 150));
+  let prev = from;
+  for (let i = 0; i < k; i++) {
+    const piece = slice(pts, cum, (L * i) / k, (L * (i + 1)) / k);
+    const next = i === k - 1 ? to : node(piece[piece.length - 1]);
+    const r = radiusOf(piece);
+    edge(prev, next, piece, P.vMain, 'main', r < 2000 ? { ...extra, radius: Math.round(Math.max(r, 8)) } : extra);
+    prev = next;
+  }
+}
 const stations = [];
 for (const b of beams) {
   b.pts = b.twin ? offsetLine(b.pts, P.twinOffset) : b.pts;
@@ -923,8 +1413,8 @@ for (const b of beams) {
     const sm = node(pointAlong(b.pts, b.cum, at + H));
     const sin = node(atp(-B, P.stationOffset));
     const sout = node(atp(B, P.stationOffset));
-    edge(cur, sd, slice(b.pts, b.cum, curS, at - H), P.vMain, 'main', { bridge: b.link.bridge, street: b.link.name });
-    edge(sd, sm, slice(b.pts, b.cum, at - H, at + H), P.vMain, 'main', { street: b.link.name });
+    mainEdge(cur, sd, slice(b.pts, b.cum, curS, at - H), { bridge: b.link.bridge, street: b.link.name });
+    mainEdge(sd, sm, slice(b.pts, b.cum, at - H, at + H), { street: b.link.name });
     const curve = (d0, d1, o0, o1) => {
       const pts = [];
       for (let k = 0; k <= 8; k++) {
@@ -955,7 +1445,7 @@ for (const b of beams) {
     cur = sm;
     curS = at + H;
   }
-  edge(cur, b.d, slice(b.pts, b.cum, curS, b.len - b.x1), P.vMain, 'main', { bridge: b.link.bridge, street: b.link.name });
+  mainEdge(cur, b.d, slice(b.pts, b.cum, curS, b.len - b.x1), { bridge: b.link.bridge, street: b.link.name });
 }
 
 // Junction connectors.
@@ -1100,10 +1590,12 @@ const stPts = fStations.map((s) => [s.x, s.y]);
 // as straight-line x 1.25.
 const walkCut = { quarterMile: 402, thirdMile: 536, halfMile: 805 };
 const cov = Object.fromEntries(Object.keys(walkCut).map((k) => [k, 0]));
+let walkSum = 0;
 for (const b of blocks) {
   let de = Infinity;
   for (const q of stPts) de = Math.min(de, dist(q, b.p));
   for (const [k, d] of Object.entries(walkCut)) if (de * 1.25 <= d) cov[k] += b.w;
+  walkSum += b.w * de * 1.25;
 }
 const uniqueSites = new Set(sites).size;
 const stats = {
@@ -1128,7 +1620,8 @@ const stats = {
 };
 const out = {
   params: P,
-  stats,
+  // meanWalkM: average walk to the nearest station, weighted by people + jobs (straight line x 1.25)
+  stats: { ...stats, designSpeedKmh: Math.round(P.vMain * 3.6), meanWalkM: Math.round(walkSum / W) },
   geo: { city: city.map(r1), lakes: Object.fromEntries(Object.entries(geo.lakes).map(([k, r]) => [k, r.map(project).map(r1)])), river: river.map((l) => l.map(r1)) },
   corridors: [...selected].map((l) => ({ name: l.name, oneway: l.oneway !== 'B', bridge: l.bridge, pts: l.pts.map(r1) })),
   nodes: fNodes,
@@ -1136,5 +1629,5 @@ const out = {
   stations: fStations,
   uncovered: [],
 };
-fs.writeFileSync(new URL('../data/network.json', import.meta.url), JSON.stringify(out));
+fs.writeFileSync(new URL(`../data/${P.out || 'network'}.json`, import.meta.url), JSON.stringify(out));
 console.log(JSON.stringify(stats, null, 2));

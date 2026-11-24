@@ -16,11 +16,21 @@
 
 import { cumulative, pointAlong } from './geo.js';
 
-// Comfort presets. Lateral = sideways acceleration felt in curves; accel and
-// decel = comfortable speeding up and slowing down for seated riders.
+// Comfort presets, from ASCE 21 (automated people mover standards) and
+// J. E. Anderson's PRT design values. latAccel is the horizontal acceleration a
+// curve may use (felt sideways force plus what banking or swing absorbs);
+// accel / decel are normal-service rates.
+//  standing:  0.1 g sideways, 0.13 g speeding up / slowing (ASCE, standing riders)
+//  flat:      seated, unbanked track: 0.2 g sideways, 0.2 g fore-aft
+//  rail:      seated, top-supported with ~6 deg banking: 0.2 g felt + bank = ~0.3 g
+//  suspended: seated, cabin swings (damped) ~21 deg: ~0.38 g with little felt sideways
+// Anderson notes a banked top-supported vehicle and a swinging one reach about
+// the same radius; the swing allowed is the suspended design's main lever.
 export const COMFORT = {
-  rail: { latAccel: 1.2, accel: 1.5, decel: 2.0 },
-  suspended: { latAccel: 2.2, accel: 1.5, decel: 2.0 },
+  standing: { latAccel: 0.98, accel: 1.27, decel: 1.27 },
+  flat: { latAccel: 1.96, accel: 1.96, decel: 1.96 },
+  rail: { latAccel: 3.0, accel: 1.96, decel: 1.96 },
+  suspended: { latAccel: 3.7, accel: 1.96, decel: 1.96 },
 };
 
 export const DEFAULTS = {
@@ -30,7 +40,7 @@ export const DEFAULTS = {
   vehicleLength: 3.0, // m
   comfort: 'rail', // or 'suspended'; sets latAccel, accel and decel unless given
   maxDecel: 5.0, // m/s^2, emergency limit
-  vMain: 15, // m/s line speed cap (network edges may be lower)
+  vMain: Infinity, // m/s line speed cap; the network's design speed applies otherwise
   horizon: 320, // m, look-ahead for leaders, merges and speed limits
   launchSlack: 2, // s a station launch accepts its merge slot being later than it could get there
   fleetPerStation: 4,
@@ -125,7 +135,10 @@ export class Sim {
       if (e.kind === 'turn') {
         const r = e.radius ?? (e.vmax * e.vmax) / 1.5;
         e.vmax = Math.min(this.p.vMain, Math.sqrt(this.p.latAccel * r));
-      } else e.vmax = Math.min(e.vmax, this.p.vMain);
+      } else {
+        e.vmax = Math.min(e.vmax, this.p.vMain);
+        if (e.radius) e.vmax = Math.min(e.vmax, Math.sqrt(this.p.latAccel * e.radius));
+      }
     }
     this.mergeSlots = new Map(); // merge node -> bookings sorted by time
     this.lastIn = new Map(); // "node|in-edge" -> latest booking from that approach

@@ -9,16 +9,18 @@ import { csvRows } from './csv.mjs';
 const args = process.argv.slice(2);
 const minutes = Number(args.find((a) => !a.includes('=')) ?? 60);
 const opts = Object.fromEntries(args.filter((a) => a.includes('=')).map((a) => a.split('=')).map(([k, v]) => [k, isNaN(Number(v)) ? v : Number(v)]));
+const netName = opts.net || 'network';
 if (opts.demand === 'tbi-model' || opts.demand === 'tbi') {
   opts.demandModel = opts.demand === 'tbi-model';
-  opts.demandData = JSON.parse(fs.readFileSync(new URL('../data/demand-tbi.json', import.meta.url)));
+  opts.demandData = JSON.parse(fs.readFileSync(new URL(`../data/demand-tbi${netName === 'network' ? '' : '-' + netName}.json`, import.meta.url)));
 }
 delete opts.demand;
-const net = JSON.parse(fs.readFileSync(new URL(`../data/${opts.net || 'network'}.json`, import.meta.url)));
+const net = JSON.parse(fs.readFileSync(new URL(`../data/${netName}.json`, import.meta.url)));
 delete opts.net;
 
 const WALK_SPEED = 1.3; // m/s
-const WALK_EACH_END = 0.7 * 402 * 1.0; // average walk to a station, m (about 70% of a quarter mile)
+// average walk to a station at each end: this network's people+jobs-weighted mean
+const WALK_EACH_END = net.stats?.meanWalkM ?? 0.7 * 402;
 const bands = [
   [1, 2],
   [2, 3],
@@ -96,7 +98,7 @@ function routeStats(log) {
 
 const fmt = (x) => (x == null ? '   –' : (x / 60).toFixed(1).padStart(5));
 console.log(JSON.stringify(sim.summary()));
-console.log('\nMedian door-to-door minutes by straight-line trip distance (PRT includes ~3 min walk each end):');
+console.log(`\nMedian door-to-door minutes by straight-line trip distance (PRT includes a ${Math.round(WALK_EACH_END)} m walk at each end):`);
 console.log('distance   PRT   (wait  ride)   car   transit  bike   ride-hail   PRT trips');
 bands.forEach(([a, b], i) => {
   const row = [`${a}-${b} km`.padEnd(9), fmt(median(prt[i].door)), ' (', fmt(median(prt[i].wait)), fmt(median(prt[i].ride)), ')'];
