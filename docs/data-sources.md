@@ -73,8 +73,10 @@ purpose, with times and modes, recorded by thousands of households.
 It's the standard input to the region's travel model.
 
 - 2023 survey: about 108,000 trips from 3,749 households, through NREL's
-  Transportation Secure Data Center ([2023 TBI](https://www.nrel.gov/transportation/secure-transportation-data/tsdc-cleansed-data/2023-twin-cities-travel-behavior-inventory-household-travel-survey)).
-  The "cleansed" public version is a free download after registration.
+  Transportation Secure Data Center ([2023 TBI](https://www.nlr.gov/transportation/secure-transportation-data/tsdc-cleansed-data/2023-twin-cities-travel-behavior-inventory-household-travel-survey)).
+  The "cleansed" public version is a free download after a one-time registration
+  that accepts their data-use agreement (credit DOE/NLR in anything published).
+  The 2019 and 2021 surveys are on [another page](https://www.nlr.gov/transportation/secure-transportation-data/tsdc-2019-and-2021-twin-cities-travel-behavior-inventory-surveys).
   Exact locations are in the secure version only.
 - 2019 survey: listed on the [Minnesota Geospatial Commons](https://gisdata.mn.gov/dataset/us-mn-state-metc-society-tbi-home-interview2019),
   but I couldn't get a direct download from here.
